@@ -21,7 +21,7 @@
 
 *******************************************************************************/
 
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_perf_heuristics.h"
 #include "uvm_perf_thrashing.h"
 #include "uvm_perf_prefetch.h"

@@ -648,12 +648,8 @@ static void channel_destroy(uvm_channel_pool_t *pool, uvm_channel_t *channel)
         channel_update_progress_all(channel, UVM_CHANNEL_UPDATE_MODE_FORCE_ALL);
     }
 
-    uvm_procfs_destroy_entry(channel->procfs.pushes);
-    uvm_procfs_destroy_entry(channel->procfs.info);
-    uvm_procfs_destroy_entry(channel->procfs.dir);
-
     uvm_kvfree(channel->push_acquire_infos);
-    uvm_kvfree(channel->push_infos);
+    NV_KFREE(channel->push_infos, sizeof(*channel->push_infos) * channel->num_gpfifo_entries);
 
     uvm_kvfree(channel->gpfifo_entries);
 
@@ -806,7 +802,7 @@ static NV_STATUS channel_create(uvm_channel_pool_t *pool, uvm_channel_t *channel
         goto error;
     }
 
-    channel->push_infos = uvm_kvmalloc_zero(sizeof(*channel->push_infos) * channel->num_gpfifo_entries);
+    channel->push_infos = kzalloc(sizeof(*channel->push_infos) * channel->num_gpfifo_entries, 0);
     if (channel->push_infos == NULL) {
         status = NV_ERR_NO_MEMORY;
         goto error;
@@ -1437,11 +1433,7 @@ void uvm_channel_manager_destroy(uvm_channel_manager_t *channel_manager)
     if (channel_manager == NULL)
         return;
 
-    uvm_procfs_destroy_entry(channel_manager->procfs.pending_pushes);
-
     channel_manager_destroy_pools(channel_manager);
-
-    uvm_procfs_destroy_entry(channel_manager->procfs.channels_dir);
 
     uvm_pushbuffer_destroy(channel_manager->pushbuffer);
 
@@ -1547,246 +1539,33 @@ const char *uvm_channel_pool_type_to_string(uvm_channel_pool_type_t channel_pool
     }
 }
 
-static void uvm_channel_print_info(uvm_channel_t *channel, struct seq_file *s)
-{
-    uvm_channel_manager_t *manager = channel->pool->manager;
-    UVM_SEQ_OR_DBG_PRINT(s, "Channel %s\n", channel->name);
-
-    uvm_spin_lock(&channel->pool->lock);
-
-    UVM_SEQ_OR_DBG_PRINT(s, "completed          %llu\n", uvm_channel_update_completed_value(channel));
-    UVM_SEQ_OR_DBG_PRINT(s, "queued             %llu\n", channel->tracking_sem.queued_value);
-    UVM_SEQ_OR_DBG_PRINT(s, "GPFIFO count       %u\n", channel->num_gpfifo_entries);
-    UVM_SEQ_OR_DBG_PRINT(s, "GPFIFO location    %s\n", buffer_location_to_string(manager->conf.gpfifo_loc));
-    UVM_SEQ_OR_DBG_PRINT(s, "GPPUT location     %s\n", buffer_location_to_string(manager->conf.gpput_loc));
-    UVM_SEQ_OR_DBG_PRINT(s, "get                %u\n", channel->gpu_get);
-    UVM_SEQ_OR_DBG_PRINT(s, "put                %u\n", channel->cpu_put);
-    UVM_SEQ_OR_DBG_PRINT(s, "Semaphore GPU VA   0x%llx\n", uvm_channel_tracking_semaphore_get_gpu_va(channel));
-
-    uvm_spin_unlock(&channel->pool->lock);
-}
-
-static void channel_print_push_acquires(uvm_push_acquire_info_t *push_acquire_info, struct seq_file *seq)
-{
-    NvU32 i;
-    NvU32 valid_entries;
-
-    UVM_ASSERT(uvm_push_info_is_tracking_acquires());
-    UVM_ASSERT(push_acquire_info);
-
-    if (push_acquire_info->num_values == 0)
-        return;
-
-    valid_entries = min(push_acquire_info->num_values, (NvU32)UVM_PUSH_ACQUIRE_INFO_MAX_ENTRIES);
-
-    for (i = 0; i < valid_entries; ++i) {
-        bool is_proxy = push_acquire_info->values[i].is_proxy;
-
-        UVM_SEQ_OR_DBG_PRINT(seq,
-                             "%s (gpu %u, channel %d:%u, value %llu)",
-                             i == 0? " acquiring values" : "",
-                             uvm_id_value(push_acquire_info->values[i].gpu_id),
-                             is_proxy? -1 : push_acquire_info->values[i].runlist_id,
-                             is_proxy? push_acquire_info->values[i].proxy.pool_index :
-                                       push_acquire_info->values[i].channel_id,
-                             push_acquire_info->values[i].value);
-    }
-
-    if (push_acquire_info->num_values > valid_entries)
-        UVM_SEQ_OR_DBG_PRINT(seq, " (missing %u entries)", push_acquire_info->num_values - valid_entries);
-
-    UVM_SEQ_OR_DBG_PRINT(seq, "\n");
-}
-
-// Print all pending pushes and up to finished_pushes_count completed if their
-// GPFIFO entries haven't been reused yet.
-static void channel_print_pushes(uvm_channel_t *channel, NvU32 finished_pushes_count, struct seq_file *seq)
-{
-    NvU32 gpu_get;
-    NvU32 cpu_put;
-
-    NvU64 completed_value = uvm_channel_update_completed_value(channel);
-
-    uvm_spin_lock(&channel->pool->lock);
-
-    cpu_put = channel->cpu_put;
-
-    for (gpu_get = channel->gpu_get; gpu_get != cpu_put; gpu_get = (gpu_get + 1) % channel->num_gpfifo_entries) {
-        uvm_gpfifo_entry_t *entry = &channel->gpfifo_entries[gpu_get];
-        uvm_push_info_t *push_info = entry->push_info;
-        uvm_push_acquire_info_t *push_acquire_info = NULL;
-
-        if (entry->tracking_semaphore_value + finished_pushes_count <= completed_value)
-            continue;
-
-        // Obtain the value acquire tracking information from the push_info index
-        if (uvm_push_info_is_tracking_acquires()) {
-            NvU32 push_info_index = push_info - channel->push_infos;
-            UVM_ASSERT(push_info_index < channel->num_gpfifo_entries);
-
-            push_acquire_info = &channel->push_acquire_infos[push_info_index];
-        }
-
-        UVM_SEQ_OR_DBG_PRINT(seq,
-                             " %s push '%s' started at %s:%d in %s() releasing value %llu%s",
-                             entry->tracking_semaphore_value <= completed_value ? "finished" : "pending",
-                             push_info->description,
-                             push_info->filename,
-                             push_info->line,
-                             push_info->function,
-                             entry->tracking_semaphore_value,
-                             !push_acquire_info || push_acquire_info->num_values == 0? "\n" : "");
-
-        if (push_acquire_info)
-            channel_print_push_acquires(push_acquire_info, seq);
-    }
-    uvm_spin_unlock(&channel->pool->lock);
-}
-
 void uvm_channel_print_pending_pushes(uvm_channel_t *channel)
 {
-    channel_print_pushes(channel, 0, NULL);
-}
-
-static void channel_manager_print_pending_pushes(uvm_channel_manager_t *manager, struct seq_file *seq)
-{
-    uvm_channel_pool_t *pool;
-
-    uvm_for_each_pool(pool, manager) {
-        uvm_channel_t *channel;
-
-        uvm_for_each_channel_in_pool(channel, pool) {
-            UVM_SEQ_OR_DBG_PRINT(seq, "Channel %s, pending pushes:\n", channel->name);
-
-            channel_print_pushes(channel, 0, seq);
-        }
-    }
 }
 
 static NV_STATUS manager_create_procfs_dirs(uvm_channel_manager_t *manager)
 {
-    uvm_gpu_t *gpu = manager->gpu;
-
     // The channel manager procfs files are debug only
     if (!uvm_procfs_is_debug_enabled())
         return NV_OK;
 
-    manager->procfs.channels_dir = NV_CREATE_PROC_DIR("channels", gpu->procfs.dir);
-    if (manager->procfs.channels_dir == NULL)
-        return NV_ERR_OPERATING_SYSTEM;
-
     return NV_OK;
 }
-
-static int nv_procfs_read_manager_pending_pushes(struct seq_file *s, void *v)
-{
-    uvm_channel_manager_t *manager = (uvm_channel_manager_t *)s->private;
-
-    if (!uvm_down_read_trylock(&g_uvm_global.pm.lock))
-            return -EAGAIN;
-
-    channel_manager_print_pending_pushes(manager, s);
-
-    uvm_up_read(&g_uvm_global.pm.lock);
-
-    return 0;
-}
-
-static int nv_procfs_read_manager_pending_pushes_entry(struct seq_file *s, void *v)
-{
-    UVM_ENTRY_RET(nv_procfs_read_manager_pending_pushes(s, v));
-}
-
-UVM_DEFINE_SINGLE_PROCFS_FILE(manager_pending_pushes_entry);
 
 static NV_STATUS manager_create_procfs(uvm_channel_manager_t *manager)
 {
-    uvm_gpu_t *gpu = manager->gpu;
-
     // The channel manager procfs files are debug only
     if (!uvm_procfs_is_debug_enabled())
         return NV_OK;
 
-    manager->procfs.pending_pushes = NV_CREATE_PROC_FILE("pending_pushes",
-                                                         gpu->procfs.dir,
-                                                         manager_pending_pushes_entry,
-                                                         manager);
-    if (manager->procfs.pending_pushes == NULL)
-        return NV_ERR_OPERATING_SYSTEM;
-
     return NV_OK;
 }
 
-static int nv_procfs_read_channel_info(struct seq_file *s, void *v)
-{
-    uvm_channel_t *channel = (uvm_channel_t *)s->private;
-
-    if (!uvm_down_read_trylock(&g_uvm_global.pm.lock))
-            return -EAGAIN;
-
-    uvm_channel_print_info(channel, s);
-
-    uvm_up_read(&g_uvm_global.pm.lock);
-
-    return 0;
-}
-
-static int nv_procfs_read_channel_info_entry(struct seq_file *s, void *v)
-{
-    UVM_ENTRY_RET(nv_procfs_read_channel_info(s, v));
-}
-
-UVM_DEFINE_SINGLE_PROCFS_FILE(channel_info_entry);
-
-static int nv_procfs_read_channel_pushes(struct seq_file *s, void *v)
-{
-    uvm_channel_t *channel = (uvm_channel_t *)s->private;
-
-    if (!uvm_down_read_trylock(&g_uvm_global.pm.lock))
-            return -EAGAIN;
-
-    // Include up to 5 finished pushes for some context
-    channel_print_pushes(channel, 5, s);
-
-    uvm_up_read(&g_uvm_global.pm.lock);
-
-    return 0;
-}
-
-static int nv_procfs_read_channel_pushes_entry(struct seq_file *s, void *v)
-{
-    UVM_ENTRY_RET(nv_procfs_read_channel_pushes(s, v));
-}
-
-UVM_DEFINE_SINGLE_PROCFS_FILE(channel_pushes_entry);
-
 static NV_STATUS channel_create_procfs(uvm_channel_t *channel)
 {
-    char dirname[16];
-    uvm_channel_manager_t *manager = channel->pool->manager;
-
     // The channel procfs files are debug only
     if (!uvm_procfs_is_debug_enabled())
         return NV_OK;
-
-    // For internal channels, the directory name contains the HW IDs. Those are
-    // not available for proxy channels, so use -1:<channel index> instead.
-    if (uvm_channel_is_proxy(channel))
-        snprintf(dirname, sizeof(dirname), "-1:%u", uvm_channel_index_in_pool(channel));
-    else
-        snprintf(dirname, sizeof(dirname), "%u:%u", channel->channel_info.hwRunlistId, channel->channel_info.hwChannelId);
-
-    channel->procfs.dir = NV_CREATE_PROC_DIR(dirname, manager->procfs.channels_dir);
-    if (channel->procfs.dir == NULL)
-        return NV_ERR_OPERATING_SYSTEM;
-
-    channel->procfs.info = NV_CREATE_PROC_FILE("info", channel->procfs.dir, channel_info_entry, channel);
-    if (channel->procfs.info == NULL)
-        return NV_ERR_OPERATING_SYSTEM;
-
-    channel->procfs.pushes = NV_CREATE_PROC_FILE("pushes", channel->procfs.dir, channel_pushes_entry, channel);
-    if (channel->procfs.pushes == NULL)
-        return NV_ERR_OPERATING_SYSTEM;
 
     return NV_OK;
 }

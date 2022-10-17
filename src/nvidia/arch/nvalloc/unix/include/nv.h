@@ -34,7 +34,10 @@
 #elif defined(NV_KERNEL_INTERFACE_LAYER) && defined(NV_LINUX)
   #include <linux/stddef.h> // NULL
 #else
-  #include <stddef.h>       // NULL
+  #ifndef NULL
+  #define NULL  0
+  typedef unsigned long size_t;
+  #endif
 #endif
 
 #include <nvstatus.h>

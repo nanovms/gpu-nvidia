@@ -182,7 +182,7 @@ struct uvm_user_channel_struct
 
     // Node in the owning gpu_va_space's registered_channels list. Cleared once
     // the channel is detached.
-    struct list_head list_node;
+    struct list list_node;
 
     // Boolean which is set during the window between
     // nvUvmInterfaceBindChannelResources and nvUvmInterfaceStopChannel. This is
@@ -249,7 +249,7 @@ void uvm_user_channel_stop(uvm_user_channel_t *user_channel);
 // uvm_gpu_destroy_detached_channels.
 //
 // LOCKING: The owning VA space must be locked in write mode.
-void uvm_user_channel_detach(uvm_user_channel_t *user_channel, struct list_head *deferred_free_list);
+void uvm_user_channel_detach(uvm_user_channel_t *user_channel, struct list *deferred_free_list);
 
 // Third phase of user channel destroy which frees the user_channel object and
 // releases the corresponding resources and instance pointer. The channel must

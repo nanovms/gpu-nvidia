@@ -23,10 +23,8 @@
 
 #define  __NO_VERSION__
 
-#include <linux/i2c.h>
-
 #include "os-interface.h"
-#include "nv-linux.h"
+#include "nv-nanos.h"
 
 #if defined(CONFIG_I2C) || defined(CONFIG_I2C_MODULE)
 

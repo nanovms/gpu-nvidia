@@ -24,10 +24,8 @@
 #define  __NO_VERSION__
 
 #include "os-interface.h"
-#include "nv-linux.h"
+#include "nv-nanos.h"
 #include "nv-reg.h"
-
-#include <linux/acpi.h>
 
 #if defined(NV_LINUX_ACPI_EVENTS_SUPPORTED)
 static NV_STATUS   nv_acpi_extract_integer (const union acpi_object *, void *, NvU32, NvU32 *);
@@ -1384,12 +1382,12 @@ NV_STATUS NV_API_CALL nv_acpi_get_powersource(NvU32 *ac_plugged)
     return NV_ERR_NOT_SUPPORTED;
 }
 
-void nv_acpi_register_notifier(nv_linux_state_t *nvl)
+void nv_acpi_register_notifier(nv_nanos_state_t *nvl)
 {
     return;
 }
 
-void nv_acpi_unregister_notifier(nv_linux_state_t *nvl)
+void nv_acpi_unregister_notifier(nv_nanos_state_t *nvl)
 {
     return;
 }

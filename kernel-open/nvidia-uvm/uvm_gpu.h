@@ -28,7 +28,7 @@
 #include "nvmisc.h"
 #include "uvm_types.h"
 #include "nv_uvm_types.h"
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "nv-kref.h"
 #include "uvm_common.h"
 #include "ctrl2080mc.h"
@@ -123,7 +123,7 @@ struct uvm_service_block_context_struct
     struct
     {
         // Node of the list of fault service contexts used by the CPU
-        struct list_head service_context_list;
+        struct list service_context_list;
 
         // A mask of GPUs that need to be checked for ECC errors before the CPU
         // fault handler returns, but after the VA space lock has been unlocked to
@@ -1140,14 +1140,13 @@ static uvm_numa_info_t *uvm_gpu_numa_info(uvm_gpu_t *gpu)
     return &gpu->parent->numa_info;
 }
 
-static uvm_gpu_phys_address_t uvm_gpu_page_to_phys_address(uvm_gpu_t *gpu, struct page *page)
+static uvm_gpu_phys_address_t uvm_gpu_page_to_phys_address(uvm_gpu_t *gpu, u64 page)
 {
     uvm_numa_info_t *numa_info = uvm_gpu_numa_info(gpu);
 
-    unsigned long sys_addr = page_to_pfn(page) << PAGE_SHIFT;
+    unsigned long sys_addr = page;
     unsigned long gpu_offset = sys_addr - numa_info->system_memory_window_start;
 
-    UVM_ASSERT(page_to_nid(page) == numa_info->node_id);
     UVM_ASSERT(sys_addr >= numa_info->system_memory_window_start);
     UVM_ASSERT(sys_addr + PAGE_SIZE - 1 <= numa_info->system_memory_window_end);
 
@@ -1318,14 +1317,14 @@ NV_STATUS uvm_gpu_check_ecc_error_no_rm(uvm_gpu_t *gpu);
 //
 // Returns the physical address of the pages that can be used to access them on
 // the GPU.
-NV_STATUS uvm_gpu_map_cpu_pages(uvm_gpu_t *gpu, struct page *page, size_t size, NvU64 *dma_address_out);
+NV_STATUS uvm_gpu_map_cpu_pages(uvm_gpu_t *gpu, u64 pa, size_t size, NvU64 *dma_address_out);
 
 // Unmap num_pages pages previously mapped with uvm_gpu_map_cpu_pages().
 void uvm_gpu_unmap_cpu_pages(uvm_gpu_t *gpu, NvU64 dma_address, size_t size);
 
-static NV_STATUS uvm_gpu_map_cpu_page(uvm_gpu_t *gpu, struct page *page, NvU64 *dma_address_out)
+static NV_STATUS uvm_gpu_map_cpu_page(uvm_gpu_t *gpu, u64 pa, NvU64 *dma_address_out)
 {
-    return uvm_gpu_map_cpu_pages(gpu, page, PAGE_SIZE, dma_address_out);
+    return uvm_gpu_map_cpu_pages(gpu, pa, PAGE_SIZE, dma_address_out);
 }
 
 static void uvm_gpu_unmap_cpu_page(uvm_gpu_t *gpu, NvU64 dma_address)
@@ -1340,7 +1339,6 @@ static void uvm_gpu_unmap_cpu_page(uvm_gpu_t *gpu, NvU64 dma_address)
 //   the GPU in the dma_address_out parameter.
 // - the address of allocated memory in CPU virtual address space.
 void *uvm_gpu_dma_alloc_page(uvm_parent_gpu_t *parent_gpu,
-                             gfp_t gfp_flags,
                              NvU64 *dma_address_out);
 
 // Unmap and free size bytes of contiguous sysmem DMA previously allocated

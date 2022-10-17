@@ -30,7 +30,6 @@ static NV_STATUS uvm_ats_service_fault(uvm_gpu_va_space_t *gpu_va_space,
                                        uvm_fault_access_type_t access_type)
 {
     uvm_va_space_t *va_space = gpu_va_space->va_space;
-    struct mm_struct *mm = va_space->va_space_mm.mm;
     bool write = (access_type >= UVM_FAULT_ACCESS_TYPE_WRITE);
     NV_STATUS status;
     NvU64 start;
@@ -65,7 +64,6 @@ static NV_STATUS uvm_ats_service_fault(uvm_gpu_va_space_t *gpu_va_space,
     uvm_migrate_args_t uvm_migrate_args =
     {
         .va_space               = va_space,
-        .mm                     = mm,
         .start                  = fault_addr,
         .length                 = PAGE_SIZE,
         .dst_id                 = gpu_va_space->gpu->parent->id,
@@ -77,7 +75,7 @@ static NV_STATUS uvm_ats_service_fault(uvm_gpu_va_space_t *gpu_va_space,
         .user_space_length      = &length,
     };
 
-    UVM_ASSERT(uvm_ats_can_service_faults(gpu_va_space, mm));
+    UVM_ASSERT(uvm_ats_can_service_faults(gpu_va_space));
 
     // TODO: Bug 2103669: Service more than a single fault at a time
     //

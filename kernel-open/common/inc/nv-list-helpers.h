@@ -23,7 +23,6 @@
 #ifndef __NV_LIST_HELPERS_H__
 #define __NV_LIST_HELPERS_H__
 
-#include <linux/list.h>
 #include "conftest.h"
 
 /*
@@ -66,12 +65,18 @@
 #endif
 
 #if !defined(NV_LIST_IS_FIRST_PRESENT)
-    static inline int list_is_first(const struct list_head *list,
-                                    const struct list_head *head)
+    static inline int list_is_first(const struct list *list,
+                                    const struct list *head)
     {
         return list->prev == head;
     }
 #endif
+
+static inline int list_is_last(const struct list *list,
+                               const struct list *head)
+{
+    return list->next == head;
+}
 
 #if defined(NV_HLIST_FOR_EACH_ENTRY_ARGUMENT_COUNT)
 #if NV_HLIST_FOR_EACH_ENTRY_ARGUMENT_COUNT == 3

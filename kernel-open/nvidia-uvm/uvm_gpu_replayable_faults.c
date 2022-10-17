@@ -21,9 +21,8 @@
 
 *******************************************************************************/
 
-#include "linux/sort.h"
 #include "nv_uvm_interface.h"
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_global.h"
 #include "uvm_gpu_replayable_faults.h"
 #include "uvm_hal.h"
@@ -145,15 +144,15 @@ static NV_STATUS fault_buffer_init_replayable_faults(uvm_parent_gpu_t *parent_gp
                 parent_gpu->fault_buffer_info.max_batch_size);
     }
 
-    batch_context->fault_cache = uvm_kvmalloc_zero(replayable_faults->max_faults * sizeof(*batch_context->fault_cache));
+    batch_context->fault_cache = kzalloc(replayable_faults->max_faults * sizeof(*batch_context->fault_cache), 0);
     if (!batch_context->fault_cache)
         return NV_ERR_NO_MEMORY;
 
     // fault_cache is used to signal that the tracker was initialized.
     uvm_tracker_init(&replayable_faults->replay_tracker);
 
-    batch_context->ordered_fault_cache = uvm_kvmalloc_zero(replayable_faults->max_faults *
-                                                           sizeof(*batch_context->ordered_fault_cache));
+    batch_context->ordered_fault_cache = kzalloc(replayable_faults->max_faults *
+                                                 sizeof(*batch_context->ordered_fault_cache), 0);
     if (!batch_context->ordered_fault_cache)
         return NV_ERR_NO_MEMORY;
 
@@ -217,8 +216,9 @@ static void fault_buffer_deinit_replayable_faults(uvm_parent_gpu_t *parent_gpu)
             parent_gpu->arch_hal->enable_prefetch_faults(parent_gpu);
     }
 
-    uvm_kvfree(batch_context->fault_cache);
-    uvm_kvfree(batch_context->ordered_fault_cache);
+    NV_KFREE(batch_context->fault_cache, replayable_faults->max_faults * sizeof(*batch_context->fault_cache));
+    NV_KFREE(batch_context->ordered_fault_cache,
+             replayable_faults->max_faults * sizeof(*batch_context->ordered_fault_cache));
     uvm_kvfree(batch_context->utlbs);
     batch_context->fault_cache         = NULL;
     batch_context->ordered_fault_cache = NULL;
@@ -865,17 +865,17 @@ done:
 
 // Sort comparator for pointers to fault buffer entries that sorts by
 // instance pointer
-static int cmp_sort_fault_entry_by_instance_ptr(const void *_a, const void *_b)
+static bool cmp_sort_fault_entry_by_instance_ptr(void *_a, void *_b)
 {
     const uvm_fault_buffer_entry_t **a = (const uvm_fault_buffer_entry_t **)_a;
     const uvm_fault_buffer_entry_t **b = (const uvm_fault_buffer_entry_t **)_b;
 
-    return cmp_fault_instance_ptr(*a, *b);
+    return (cmp_fault_instance_ptr(*a, *b) > 0);
 }
 
 // Sort comparator for pointers to fault buffer entries that sorts by va_space,
 // fault address and fault access type
-static int cmp_sort_fault_entry_by_va_space_address_access_type(const void *_a, const void *_b)
+static bool cmp_sort_fault_entry_by_va_space_address_access_type(void *_a, void *_b)
 {
     const uvm_fault_buffer_entry_t **a = (const uvm_fault_buffer_entry_t **)_a;
     const uvm_fault_buffer_entry_t **b = (const uvm_fault_buffer_entry_t **)_b;
@@ -884,13 +884,13 @@ static int cmp_sort_fault_entry_by_va_space_address_access_type(const void *_a, 
 
     result = cmp_va_space((*a)->va_space, (*b)->va_space);
     if (result != 0)
-        return result;
+        return (result > 0);
 
     result = cmp_addr((*a)->fault_address, (*b)->fault_address);
     if (result != 0)
-        return result;
+        return (result > 0);
 
-    return cmp_access_type((*a)->fault_access_type, (*b)->fault_access_type);
+    return (cmp_access_type((*a)->fault_access_type, (*b)->fault_access_type) > 0);
 }
 
 // Translate all instance pointers to VA spaces. Since the buffer is ordered by
@@ -1011,11 +1011,10 @@ static NV_STATUS preprocess_fault_batch(uvm_gpu_t *gpu, uvm_fault_service_batch_
 
     // 1) if the fault batch contains more than one, sort by instance_ptr
     if (!batch_context->is_single_instance_ptr) {
-        sort(ordered_fault_cache,
+        if (!sort((void **)ordered_fault_cache,
              batch_context->num_coalesced_faults,
-             sizeof(*ordered_fault_cache),
-             cmp_sort_fault_entry_by_instance_ptr,
-             NULL);
+             cmp_sort_fault_entry_by_instance_ptr))
+            return NV_ERR_NO_MEMORY;
     }
 
     // 2) translate all instance_ptrs to VA spaces
@@ -1025,11 +1024,10 @@ static NV_STATUS preprocess_fault_batch(uvm_gpu_t *gpu, uvm_fault_service_batch_
 
     // 3) sort by va_space, fault address (GPU already reports 4K-aligned
     // address) and access type
-    sort(ordered_fault_cache,
+    if (!sort((void **)ordered_fault_cache,
          batch_context->num_coalesced_faults,
-         sizeof(*ordered_fault_cache),
-         cmp_sort_fault_entry_by_va_space_address_access_type,
-         NULL);
+         cmp_sort_fault_entry_by_va_space_address_access_type))
+        return NV_ERR_NO_MEMORY;
 
     return NV_OK;
 }
@@ -1432,7 +1430,7 @@ static NV_STATUS service_non_managed_fault(uvm_fault_buffer_entry_t *current_ent
     if (status != NV_ERR_INVALID_ADDRESS)
         return status;
 
-    if (uvm_ats_can_service_faults(gpu_va_space, mm)) {
+    if (uvm_ats_can_service_faults(gpu_va_space)) {
         // The VA isn't managed. See if ATS knows about it, unless it is a
         // duplicate and the previous fault was non-fatal so the page has
         // already been serviced
@@ -1493,7 +1491,6 @@ static NV_STATUS service_fault_batch(uvm_gpu_t *gpu,
     uvm_ats_fault_invalidate_t *ats_invalidate = &gpu->parent->fault_buffer_info.replayable.ats_invalidate;
     const bool replay_per_va_block = service_mode != FAULT_SERVICE_MODE_CANCEL &&
                                      gpu->parent->fault_buffer_info.replayable.replay_policy == UVM_PERF_FAULT_REPLAY_POLICY_BLOCK;
-    struct mm_struct *mm = NULL;
     uvm_va_block_context_t *va_block_context =
         &gpu->parent->fault_buffer_info.replayable.block_service_context.block_context;
 
@@ -1518,19 +1515,11 @@ static NV_STATUS service_fault_batch(uvm_gpu_t *gpu,
                     goto fail;
 
                 uvm_va_space_up_read(va_space);
-                uvm_va_space_mm_release_unlock(va_space, mm);
-                mm = NULL;
             }
 
             va_space = current_entry->va_space;
 
             // ... and take the lock of the new one
-
-            // If an mm is registered with the VA space, we have to retain it
-            // in order to lock it before locking the VA space. It is guaranteed
-            // to remain valid until we release. If no mm is registered, we
-            // can only service managed faults, not ATS/HMM faults.
-            mm = uvm_va_space_mm_retain_lock(va_space);
 
             uvm_va_space_down_read(va_space);
 
@@ -1576,13 +1565,13 @@ static NV_STATUS service_fault_batch(uvm_gpu_t *gpu,
         // TODO: Bug 2103669: Service more than one ATS fault at a time so we
         //       don't do an unconditional VA range lookup for every ATS fault.
         status = uvm_va_block_find_create(va_space,
-                                          mm,
+                                          NULL,
                                           current_entry->fault_address,
                                           va_block_context,
                                           &va_block);
         if (status == NV_OK) {
             status = service_batch_managed_faults_in_block(gpu_va_space->gpu,
-                                                           mm,
+                                                           NULL,
                                                            va_block,
                                                            i,
                                                            batch_context,
@@ -1602,7 +1591,7 @@ static NV_STATUS service_fault_batch(uvm_gpu_t *gpu,
                                                previous_entry,
                                                status,
                                                gpu_va_space,
-                                               mm,
+                                               NULL,
                                                batch_context,
                                                ats_invalidate,
                                                utlb);
@@ -1640,7 +1629,6 @@ static NV_STATUS service_fault_batch(uvm_gpu_t *gpu,
 fail:
     if (va_space != NULL) {
         uvm_va_space_up_read(va_space);
-        uvm_va_space_mm_release_unlock(va_space, mm);
     }
 
     return status;
@@ -2342,42 +2330,4 @@ NV_STATUS uvm_test_set_prefetch_faults_reenable_lapse(UVM_TEST_SET_PREFETCH_FAUL
     uvm_perf_reenable_prefetch_faults_lapse_msec = params->reenable_lapse;
 
     return NV_OK;
-}
-
-NV_STATUS uvm_test_drain_replayable_faults(UVM_TEST_DRAIN_REPLAYABLE_FAULTS_PARAMS *params, struct file *filp)
-{
-    uvm_gpu_t *gpu;
-    NV_STATUS status = NV_OK;
-    uvm_spin_loop_t spin;
-    bool pending = true;
-    uvm_va_space_t *va_space = uvm_va_space_get(filp);
-
-    gpu = uvm_va_space_retain_gpu_by_uuid(va_space, &params->gpu_uuid);
-    if (!gpu)
-        return NV_ERR_INVALID_DEVICE;
-
-    uvm_spin_loop_init(&spin);
-
-    do {
-        uvm_gpu_replayable_faults_isr_lock(gpu->parent);
-        pending = uvm_gpu_replayable_faults_pending(gpu->parent);
-        uvm_gpu_replayable_faults_isr_unlock(gpu->parent);
-
-        if (!pending)
-            break;
-
-        if (fatal_signal_pending(current)) {
-            status = NV_ERR_SIGNAL_PENDING;
-            break;
-        }
-
-        UVM_SPIN_LOOP(&spin);
-    } while (uvm_spin_loop_elapsed(&spin) < params->timeout_ns);
-
-    if (pending && status == NV_OK)
-        status = NV_ERR_TIMEOUT;
-
-    uvm_gpu_release(gpu);
-
-    return status;
 }

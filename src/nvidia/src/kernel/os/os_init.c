@@ -659,33 +659,6 @@ void nvErrorLog(void *pVoid, NvU32 num, const char *pFormat, va_list arglist)
 
     OBJGPU    *pGpu    = reinterpretCast(pVoid, OBJGPU *);
 
-#if RMCFG_MODULE_SMBPBI || \
-    (RMCFG_MODULE_KERNEL_RC && !RMCFG_FEATURE_PLATFORM_GSP)
-    char *errorString = portMemAllocNonPaged(MAX_ERROR_STRING);
-    if (errorString == NULL)
-        goto done;
-
-    unsigned msglen;
-    va_list arglistCpy;
-
-    va_copy(arglistCpy, arglist);
-    msglen = nvDbgVsnprintf(errorString, MAX_ERROR_STRING, pFormat, arglistCpy);
-    va_end(arglistCpy);
-
-    if (msglen == 0)
-        goto done;
-
-    {
-        KernelRc *pKernelRc = GPU_GET_KERNEL_RC(pGpu);
-        if (pKernelRc != NULL)
-            krcReportXid(pGpu, pKernelRc, num, errorString);
-    }
-
-done:
-    portMemFree(errorString);
-#endif // RMCFG_MODULE_SMBPBI || (RMCFG_MODULE_KERNEL_RC &&
-       // !RMCFG_FEATURE_PLATFORM_GSP)
-
     osErrorLogV(pGpu, num, pFormat, arglist);
 }
 

@@ -25,7 +25,7 @@
 #define __UVM_PMM_SYSMEM_H__
 
 #include "uvm_common.h"
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_forward_decl.h"
 #include "uvm_lock.h"
 
@@ -43,7 +43,7 @@ struct uvm_pmm_sysmem_mappings_struct
 {
     uvm_gpu_t                                      *gpu;
 
-    struct radix_tree_root             reverse_map_tree;
+    table                              reverse_map_tree;
 
     uvm_mutex_t                        reverse_map_lock;
 };
@@ -180,7 +180,7 @@ size_t uvm_pmm_sysmem_mappings_dma_to_virt(uvm_pmm_sysmem_mappings_t *sysmem_map
 
 #if UVM_CPU_CHUNK_SIZES == PAGE_SIZE
 #define UVM_CPU_CHUNK_SIZE_IS_PAGE_SIZE() 1
-typedef struct page uvm_cpu_chunk_t;
+typedef u64 uvm_cpu_chunk_t;
 #else
 #define UVM_CPU_CHUNK_SIZE_IS_PAGE_SIZE() 0
 typedef struct uvm_cpu_chunk_struct uvm_cpu_chunk_t;
@@ -338,7 +338,7 @@ static bool uvm_cpu_chunk_is_physical(uvm_cpu_chunk_t *chunk)
 
 // Return a pointer to the struct page backing page_index within the owning
 // VA block.
-struct page *uvm_cpu_chunk_get_cpu_page(uvm_va_block_t *va_block, uvm_cpu_chunk_t *chunk, uvm_page_index_t page_index);
+u64 uvm_cpu_chunk_get_cpu_page(uvm_va_block_t *va_block, uvm_cpu_chunk_t *chunk, uvm_page_index_t page_index);
 
 // Take a reference to the CPU chunk.
 void uvm_cpu_chunk_get(uvm_cpu_chunk_t *chunk);
@@ -436,7 +436,7 @@ static void uvm_cpu_chunk_mark_clean(uvm_cpu_chunk_t *chunk, uvm_page_index_t pa
 
 static bool uvm_cpu_chunk_is_dirty(uvm_cpu_chunk_t *chunk, uvm_page_index_t page_index)
 {
-    return PageDirty(chunk);
+    return true;
 }
 #endif // !UVM_CPU_CHUNK_SIZE_IS_PAGE_SIZE()
 

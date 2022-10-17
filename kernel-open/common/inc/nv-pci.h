@@ -24,8 +24,9 @@
 #ifndef _NV_PCI_H_
 #define _NV_PCI_H_
 
-#include <linux/pci.h>
-#include "nv-linux.h"
+#include "nv-nanos.h"
+
+#include <pci.h>
 
 #if defined(NV_DEV_IS_PCI_PRESENT)
 #define nv_dev_is_pci(dev) dev_is_pci(dev)
@@ -43,6 +44,6 @@ void nv_pci_unregister_driver(void);
 int nv_pci_count_devices(void);
 NvU8 nv_find_pci_capability(struct pci_dev *, NvU8);
 int nvidia_dev_get_pci_info(const NvU8 *, struct pci_dev **, NvU64 *, NvU64 *);
-nv_linux_state_t * find_pci(NvU32, NvU8, NvU8, NvU8);
+nv_nanos_state_t * find_pci(NvU32, NvU8, NvU8, NvU8);
 
 #endif

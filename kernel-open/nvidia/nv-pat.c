@@ -24,7 +24,7 @@
 #define  __NO_VERSION__
 
 #include "os-interface.h"
-#include "nv-linux.h"
+#include "nv-nanos.h"
 #include "nv-reg.h"
 #include "nv-pat.h"
 
@@ -47,8 +47,10 @@ int nv_pat_mode = NV_PAT_MODE_DISABLED;
 #endif
 
 
-#define NV_READ_PAT_ENTRIES(pat1, pat2)   rdmsr(0x277, (pat1), (pat2))
-#define NV_WRITE_PAT_ENTRIES(pat1, pat2)  wrmsr(0x277, (pat1), (pat2))
+#define NV_READ_PAT_ENTRIES(pat1, pat2)   do {                                  \
+    u64 pat = read_msr(0x277); (pat1) = (u32)pat; (pat2) = (u32)(pat >> 32);    \
+} while (0)
+#define NV_WRITE_PAT_ENTRIES(pat1, pat2)  write_msr(0x277, (pat1) | (((u64)(pat2)) << 32))
 #define NV_PAT_ENTRY(pat, index) \
     (((pat) & (0xff << ((index)*8))) >> ((index)*8))
 
@@ -58,20 +60,22 @@ static unsigned long orig_pat1, orig_pat2;
 
 static inline void nv_disable_caches(unsigned long *cr4)
 {
-    unsigned long cr0 = read_cr0();
-    write_cr0(((cr0 & (0xdfffffff)) | 0x40000000));
-    wbinvd();
+    unsigned long cr0;
+    mov_from_cr("cr0", cr0);
+    mov_to_cr("cr0", ((cr0 & (0xdfffffff)) | 0x40000000));
+    asm volatile("wbinvd": : :"memory");
     *cr4 = NV_READ_CR4();
     if (*cr4 & 0x80) NV_WRITE_CR4(*cr4 & ~0x80);
-    __flush_tlb();
+    flush_tlb(true);
 }
 
 static inline void nv_enable_caches(unsigned long cr4)
 {
-    unsigned long cr0 = read_cr0();
-    wbinvd();
-    __flush_tlb();
-    write_cr0((cr0 & 0x9fffffff));
+    unsigned long cr0;
+    mov_from_cr("cr0", cr0);
+    asm volatile("wbinvd": : :"memory");
+    flush_tlb(true);
+    mov_to_cr("cr0", (cr0 & 0x9fffffff));
     if (cr4 & 0x80) NV_WRITE_CR4(cr4);
 }
 
@@ -203,32 +207,6 @@ static void nv_disable_builtin_pat_support(void)
     nv_printf(NV_DBG_SETUP, "restored orig pats as 0x%lx 0x%lx\n", pat1, pat2);
 }
 
-static int
-nvidia_cpu_callback(struct notifier_block *nfb, unsigned long action, void *hcpu)
-{
-/* CPU_DOWN_FAILED was added by the following commit
- *   2004 Oct 18: 71da3667be80d30121df3972caa0bf5684228379
- *
- * CPU_DOWN_PREPARE was added by the following commit
- *   2004 Oct 18: d13d28de21d913aacd3c91e76e307fa2eb7835d8
- *
- * We use one ifdef for both macros since they were added on the same day.
- */
-#if defined(CPU_DOWN_FAILED)
-    switch (action)
-    {
-        case CPU_DOWN_FAILED:
-        case CPU_ONLINE:
-            nvidia_cpu_online((NvUPtr)hcpu);
-            break;
-        case CPU_DOWN_PREPARE:
-            nvidia_cpu_teardown((NvUPtr)hcpu);
-            break;
-    }
-#endif
-    return NOTIFY_OK;
-}
-
 /*
  * See NOTE 1.
  * In order to avoid warnings for unused variable when compiling against
@@ -348,21 +326,16 @@ static void nvidia_unregister_cpu_hotplug_notifier(void)
 
 static int nv_determine_pat_mode(void)
 {
+    u32 v[4];
     unsigned int pat1, pat2, i;
     NvU8 PAT_WC_index;
 
-    if (!test_bit(X86_FEATURE_PAT,
-            (volatile unsigned long *)&boot_cpu_data.x86_capability))
+    cpuid(1, 0, v);
+    if (!(v[3] & CPUID_PAT))
     {
-        if ((boot_cpu_data.x86_vendor != X86_VENDOR_INTEL) ||
-                (boot_cpu_data.cpuid_level < 1) ||
-                ((cpuid_edx(1) & (1 << 16)) == 0) ||
-                (boot_cpu_data.x86 != 6) || (boot_cpu_data.x86_model >= 15))
-        {
             nv_printf(NV_DBG_ERRORS,
                 "NVRM: CPU does not support the PAT.\n");
             return NV_PAT_MODE_DISABLED;
-        }
     }
 
     NV_READ_PAT_ENTRIES(pat1, pat2);

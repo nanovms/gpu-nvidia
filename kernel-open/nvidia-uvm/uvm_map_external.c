@@ -22,7 +22,7 @@
 *******************************************************************************/
 
 #include "uvm_common.h"
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_forward_decl.h"
 #include "uvm_lock.h"
 #include "uvm_mmu.h"
@@ -112,7 +112,7 @@ static NV_STATUS uvm_pte_buffer_init(uvm_va_range_t *va_range,
     pte_buffer->max_pte_offset = uvm_div_pow2_64(map_rm_params->map_offset, page_size) + num_all_ptes;
     pte_buffer->buffer_size = min(MAX_PTE_BUFFER_SIZE, num_all_ptes * pte_buffer->pte_size);
 
-    pte_buffer->mapping_info.pteBuffer = uvm_kvmalloc(pte_buffer->buffer_size);
+    pte_buffer->mapping_info.pteBuffer = kmalloc(pte_buffer->buffer_size, 0);
     if (!pte_buffer->mapping_info.pteBuffer)
         return NV_ERR_NO_MEMORY;
 
@@ -121,7 +121,7 @@ static NV_STATUS uvm_pte_buffer_init(uvm_va_range_t *va_range,
 
 static void uvm_pte_buffer_deinit(uvm_pte_buffer_t *pte_buffer)
 {
-    uvm_kvfree(pte_buffer->mapping_info.pteBuffer);
+    NV_KFREE(pte_buffer->mapping_info.pteBuffer, pte_buffer->buffer_size);
 }
 
 // Get the PTEs for mapping the [map_offset, map_offset + map_size) VA range.
@@ -594,7 +594,6 @@ static void uvm_release_rm_handle(struct nv_kref *ref)
 static NV_STATUS uvm_create_external_range(uvm_va_space_t *va_space, UVM_CREATE_EXTERNAL_RANGE_PARAMS *params)
 {
     uvm_va_range_t *va_range = NULL;
-    struct mm_struct *mm;
     NV_STATUS status = NV_OK;
 
     // Before we know the page size used by the allocation, we can only enforce
@@ -605,13 +604,12 @@ static NV_STATUS uvm_create_external_range(uvm_va_space_t *va_space, UVM_CREATE_
         return NV_ERR_INVALID_ADDRESS;
 
     // The mm needs to be locked in order to remove stale HMM va_blocks.
-    mm = uvm_va_space_mm_retain_lock(va_space);
     uvm_va_space_down_write(va_space);
 
     // Create the new external VA range.
     // uvm_va_range_create_external handles any collisions when it attempts to
     // insert the new range into the va_space range tree.
-    status = uvm_va_range_create_external(va_space, mm, params->base, params->length, &va_range);
+    status = uvm_va_range_create_external(va_space, NULL, params->base, params->length, &va_range);
     if (status != NV_OK) {
         UVM_DBG_PRINT_RL("Failed to create external VA range [0x%llx, 0x%llx)\n",
                          params->base,
@@ -619,11 +617,10 @@ static NV_STATUS uvm_create_external_range(uvm_va_space_t *va_space, UVM_CREATE_
     }
 
     uvm_va_space_up_write(va_space);
-    uvm_va_space_mm_release_unlock(va_space, mm);
     return status;
 }
 
-NV_STATUS uvm_api_create_external_range(UVM_CREATE_EXTERNAL_RANGE_PARAMS *params, struct file *filp)
+NV_STATUS uvm_api_create_external_range(UVM_CREATE_EXTERNAL_RANGE_PARAMS *params, uvm_fd filp)
 {
     uvm_va_space_t *va_space = uvm_va_space_get(filp);
     return uvm_create_external_range(va_space, params);
@@ -764,7 +761,7 @@ static NV_STATUS uvm_unmap_external_in_range(uvm_va_range_t *va_range,
                                              uvm_gpu_t *gpu,
                                              NvU64 start,
                                              NvU64 end,
-                                             struct list_head *deferred_list)
+                                             struct list *deferred_list)
 {
     uvm_ext_gpu_range_tree_t *range_tree = uvm_ext_gpu_range_tree(va_range, gpu);
     uvm_ext_gpu_map_t *ext_map, *ext_map_next = NULL;
@@ -1047,7 +1044,7 @@ error:
     return status;
 }
 
-NV_STATUS uvm_api_map_external_allocation(UVM_MAP_EXTERNAL_ALLOCATION_PARAMS *params, struct file *filp)
+NV_STATUS uvm_api_map_external_allocation(UVM_MAP_EXTERNAL_ALLOCATION_PARAMS *params, uvm_fd filp)
 {
     uvm_va_space_t *va_space = uvm_va_space_get(filp);
     return uvm_map_external_allocation(va_space, params);
@@ -1062,7 +1059,7 @@ static NV_STATUS uvm_map_external_sparse_on_gpu(uvm_va_range_t *va_range,
                                                 uvm_gpu_t *mapping_gpu,
                                                 NvU64 base,
                                                 NvU64 length,
-                                                struct list_head *deferred_free_list)
+                                                struct list *deferred_free_list)
 {
     uvm_va_space_t *va_space = va_range->va_space;
     uvm_ext_gpu_map_t *ext_gpu_map = NULL;
@@ -1179,7 +1176,7 @@ out:
     return status;
 }
 
-NV_STATUS uvm_api_map_external_sparse(UVM_MAP_EXTERNAL_SPARSE_PARAMS *params, struct file *filp)
+NV_STATUS uvm_api_map_external_sparse(UVM_MAP_EXTERNAL_SPARSE_PARAMS *params, uvm_fd filp)
 {
     uvm_va_space_t *va_space = uvm_va_space_get(filp);
     return uvm_map_external_sparse(va_space, params);
@@ -1213,7 +1210,7 @@ void uvm_ext_gpu_map_free(uvm_ext_gpu_map_t *ext_gpu_map)
 
 void uvm_ext_gpu_map_destroy(uvm_va_range_t *va_range,
                              uvm_ext_gpu_map_t *ext_gpu_map,
-                             struct list_head *deferred_free_list)
+                             struct list *deferred_free_list)
 {
     uvm_membar_t membar;
     uvm_ext_gpu_range_tree_t *range_tree;
@@ -1319,7 +1316,7 @@ out:
     return status;
 }
 
-NV_STATUS uvm_api_unmap_external(UVM_UNMAP_EXTERNAL_PARAMS *params, struct file *filp)
+NV_STATUS uvm_api_unmap_external(UVM_UNMAP_EXTERNAL_PARAMS *params, uvm_fd filp)
 {
     uvm_va_space_t *va_space = uvm_va_space_get(filp);
     return uvm_unmap_external(va_space, params->base, params->length, &params->gpuUuid);
@@ -1389,7 +1386,7 @@ out:
     return status;
 }
 
-NV_STATUS uvm_api_free(UVM_FREE_PARAMS *params, struct file *filp)
+NV_STATUS uvm_api_free(UVM_FREE_PARAMS *params, uvm_fd filp)
 {
     uvm_va_space_t *va_space = uvm_va_space_get(filp);
     return uvm_free(va_space, params->base, params->length);

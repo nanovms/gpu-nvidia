@@ -24,16 +24,17 @@
 #define  __NO_VERSION__
 
 #include "os-interface.h"
-#include "nv-linux.h"
+#include "nv-nanos.h"
 
-static inline int nv_follow_pfn(struct vm_area_struct *vma,
-                                unsigned long address,
+static inline int nv_follow_pfn(unsigned long address,
                                 unsigned long *pfn)
 {
 #if defined(NV_UNSAFE_FOLLOW_PFN_PRESENT)
     return unsafe_follow_pfn(vma, address, pfn);
 #else
-    return follow_pfn(vma, address, pfn);
+    u64 phys = physical_from_virtual(pointer_from_u64(address));
+    *pfn = phys >> PAGE_SHIFT;
+    return 0;
 #endif
 }
 
@@ -41,8 +42,6 @@ static inline int nv_follow_pfn(struct vm_area_struct *vma,
  * @brief Locates the PFNs for a user IO address range, and converts those to
  *        their associated PTEs.
  *
- * @param[in]     vma VMA that contains the virtual address range given by the
- *                    start and page count parameters.
  * @param[in]     start Beginning of the virtual address range of the IO PTEs.
  * @param[in]     page_count Number of pages containing the IO range being
  *                           mapped.
@@ -51,8 +50,7 @@ static inline int nv_follow_pfn(struct vm_area_struct *vma,
  *
  * @return NV_OK if the PTEs were identified successfully, error otherwise.
  */
-static NV_STATUS get_io_ptes(struct vm_area_struct *vma,
-                             NvUPtr start,
+static NV_STATUS get_io_ptes(NvUPtr start,
                              NvU64 page_count,
                              NvU64 **pte_array)
 {
@@ -61,7 +59,7 @@ static NV_STATUS get_io_ptes(struct vm_area_struct *vma,
 
     for (i = 0; i < page_count; i++)
     {
-        if (nv_follow_pfn(vma, (start + (i * PAGE_SIZE)), &pfn) < 0)
+        if (nv_follow_pfn((start + (i * PAGE_SIZE)), &pfn) < 0)
         {
             return NV_ERR_INVALID_ADDRESS;
         }
@@ -91,8 +89,6 @@ static NV_STATUS get_io_ptes(struct vm_area_struct *vma,
  * @brief Pins user IO pages that have been mapped to the user processes virtual
  *        address space with remap_pfn_range.
  *
- * @param[in]     vma VMA that contains the virtual address range given by the
- *                    start and the page count.
  * @param[in]     start Beginning of the virtual address range of the IO pages.
  * @param[in]     page_count Number of pages to pin from start.
  * @param[in,out] page_array Storage array for pointers to the pinned pages.
@@ -101,10 +97,9 @@ static NV_STATUS get_io_ptes(struct vm_area_struct *vma,
  *
  * @return NV_OK if the pages were pinned successfully, error otherwise.
  */
-static NV_STATUS get_io_pages(struct vm_area_struct *vma,
-                              NvUPtr start,
+static NV_STATUS get_io_pages(NvUPtr start,
                               NvU64 page_count,
-                              struct page **page_array)
+                              NvU64 *page_array)
 {
     NV_STATUS rmStatus = NV_OK;
     NvU64 i, pinned = 0;
@@ -112,7 +107,7 @@ static NV_STATUS get_io_pages(struct vm_area_struct *vma,
 
     for (i = 0; i < page_count; i++)
     {
-        if ((nv_follow_pfn(vma, (start + (i * PAGE_SIZE)), &pfn) < 0) ||
+        if ((nv_follow_pfn((start + (i * PAGE_SIZE)), &pfn) < 0) ||
             (!pfn_valid(pfn)))
         {
             rmStatus = NV_ERR_INVALID_ADDRESS;
@@ -120,15 +115,12 @@ static NV_STATUS get_io_pages(struct vm_area_struct *vma,
         }
 
         // Page-backed memory mapped to userspace with remap_pfn_range
-        page_array[i] = pfn_to_page(pfn);
-        get_page(page_array[i]);
+        page_array[i] = pfn << PAGE_SHIFT;
         pinned++;
     }
 
     if (pinned < page_count)
     {
-        for (i = 0; i < pinned; i++)
-            put_page(page_array[i]);
         rmStatus = NV_ERR_INVALID_ADDRESS;
     }
 
@@ -143,8 +135,6 @@ NV_STATUS NV_API_CALL os_lookup_user_io_memory(
 )
 {
     NV_STATUS rmStatus;
-    struct mm_struct *mm = current->mm;
-    struct vm_area_struct *vma;
     unsigned long pfn;
     NvUPtr start = (NvUPtr)address;
     void **result_array;
@@ -164,24 +154,7 @@ NV_STATUS NV_API_CALL os_lookup_user_io_memory(
         return rmStatus;
     }
 
-    nv_mmap_read_lock(mm);
-
-    // find the first VMA which intersects the interval start_addr..end_addr-1,
-    vma = find_vma_intersection(mm, start, start+1);
-
-    // Verify that the given address range is contained in a single vma
-    if ((vma == NULL) || ((vma->vm_flags & (VM_IO | VM_PFNMAP)) == 0) ||
-            !((vma->vm_start <= start) &&
-              ((vma->vm_end - start) >> PAGE_SHIFT >= page_count)))
-    {
-        nv_printf(NV_DBG_ERRORS,
-                "Cannot map memory with base addr 0x%llx and size of 0x%llx pages\n",
-                start ,page_count);
-        rmStatus = NV_ERR_INVALID_ADDRESS;
-        goto done;
-    }
-
-    if (nv_follow_pfn(vma, start, &pfn) < 0)
+    if (nv_follow_pfn(start, &pfn) < 0)
     {
         rmStatus = NV_ERR_INVALID_ADDRESS;
         goto done;
@@ -189,20 +162,18 @@ NV_STATUS NV_API_CALL os_lookup_user_io_memory(
 
     if (pfn_valid(pfn))
     {
-        rmStatus = get_io_pages(vma, start, page_count, (struct page **)result_array);
+        rmStatus = get_io_pages(start, page_count, (NvU64 *)result_array);
         if (rmStatus == NV_OK)
             *page_array = (void *)result_array;
     }
     else
     {
-        rmStatus = get_io_ptes(vma, start, page_count, (NvU64 **)result_array);
+        rmStatus = get_io_ptes(start, page_count, (NvU64 **)result_array);
         if (rmStatus == NV_OK)
             *pte_array = (NvU64 *)result_array;
     }
 
 done:
-    nv_mmap_read_unlock(mm);
-
     if (rmStatus != NV_OK)
     {
         os_free_mem(result_array);
@@ -219,9 +190,8 @@ NV_STATUS NV_API_CALL os_lock_user_pages(
 )
 {
     NV_STATUS rmStatus;
-    struct mm_struct *mm = current->mm;
-    struct page **user_pages;
-    NvU64 i, pinned;
+    NvU64 *user_pages;
+    NvU64 pinned;
     NvBool write = DRF_VAL(_LOCK_USER_PAGES, _FLAGS, _WRITE, flags), force = 0;
     int ret;
 
@@ -241,10 +211,8 @@ NV_STATUS NV_API_CALL os_lock_user_pages(
         return rmStatus;
     }
 
-    nv_mmap_read_lock(mm);
     ret = NV_GET_USER_PAGES((unsigned long)address,
                             page_count, write, force, user_pages, NULL);
-    nv_mmap_read_unlock(mm);
     pinned = ret;
 
     if (ret < 0)
@@ -254,8 +222,6 @@ NV_STATUS NV_API_CALL os_lock_user_pages(
     }
     else if (pinned < page_count)
     {
-        for (i = 0; i < pinned; i++)
-            put_page(user_pages[i]);
         os_free_mem(user_pages);
         return NV_ERR_INVALID_ADDRESS;
     }
@@ -270,16 +236,7 @@ NV_STATUS NV_API_CALL os_unlock_user_pages(
     void  *page_array
 )
 {
-    NvBool write = 1;
-    struct page **user_pages = page_array;
-    NvU32 i;
-
-    for (i = 0; i < page_count; i++)
-    {
-        if (write)
-            set_page_dirty_lock(user_pages[i]);
-        put_page(user_pages[i]);
-    }
+    NvU64 *user_pages = page_array;
 
     os_free_mem(user_pages);
 

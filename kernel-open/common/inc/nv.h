@@ -29,12 +29,8 @@
 
 #include <nvlimits.h>
 
-#if defined(NV_KERNEL_INTERFACE_LAYER) && defined(__FreeBSD__)
-  #include <sys/stddef.h>   // NULL
-#elif defined(NV_KERNEL_INTERFACE_LAYER) && defined(NV_LINUX)
-  #include <linux/stddef.h> // NULL
-#else
-  #include <stddef.h>       // NULL
+#ifndef NULL
+#define NULL    0
 #endif
 
 #include <nvstatus.h>

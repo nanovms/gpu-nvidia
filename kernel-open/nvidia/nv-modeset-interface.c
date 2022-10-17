@@ -24,7 +24,7 @@
 #include "nv-modeset-interface.h"
 
 #include "os-interface.h"
-#include "nv-linux.h"
+#include "nv-nanos.h"
 #include "nvstatus.h"
 #include "nv.h"
 
@@ -73,7 +73,7 @@ void nvidia_modeset_resume(NvU32 gpuId)
 
 static NvU32 nvidia_modeset_enumerate_gpus(nv_gpu_info_t *gpu_info)
 {
-    nv_linux_state_t *nvl;
+    nv_nanos_state_t *nvl;
     unsigned int count;
 
     LOCK_NV_LINUX_DEVICES();

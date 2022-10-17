@@ -31,7 +31,7 @@ static int uvm_cpu_chunk_allocation_sizes = UVM_CPU_CHUNK_SIZES;
 module_param(uvm_cpu_chunk_allocation_sizes, uint, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(uvm_cpu_chunk_allocation_sizes, "OR'ed value of all CPU chunk allocation sizes.");
 
-static struct kmem_cache *g_reverse_page_map_cache __read_mostly;
+static heap g_reverse_page_map_cache __read_mostly;
 
 NV_STATUS uvm_pmm_sysmem_init(void)
 {
@@ -55,7 +55,10 @@ NV_STATUS uvm_pmm_sysmem_mappings_init(uvm_gpu_t *gpu, uvm_pmm_sysmem_mappings_t
     sysmem_mappings->gpu = gpu;
 
     uvm_mutex_init(&sysmem_mappings->reverse_map_lock, UVM_LOCK_ORDER_LEAF);
-    uvm_init_radix_tree_preloadable(&sysmem_mappings->reverse_map_tree);
+    sysmem_mappings->reverse_map_tree = allocate_table(heap_locked(get_kernel_heaps()), identity_key,
+                                                       pointer_equal);
+    if (sysmem_mappings->reverse_map_tree == INVALID_ADDRESS)
+        return NV_ERR_NO_MEMORY;
 
     return NV_OK;
 }
@@ -63,11 +66,12 @@ NV_STATUS uvm_pmm_sysmem_mappings_init(uvm_gpu_t *gpu, uvm_pmm_sysmem_mappings_t
 void uvm_pmm_sysmem_mappings_deinit(uvm_pmm_sysmem_mappings_t *sysmem_mappings)
 {
     if (sysmem_mappings->gpu) {
-        UVM_ASSERT_MSG(radix_tree_empty(&sysmem_mappings->reverse_map_tree),
+        UVM_ASSERT_MSG(table_elements(sysmem_mappings->reverse_map_tree) == 0,
                        "radix_tree not empty for GPU %s\n",
                        uvm_gpu_name(sysmem_mappings->gpu));
     }
 
+    deallocate_table(sysmem_mappings->reverse_map_tree);
     sysmem_mappings->gpu = NULL;
 }
 
@@ -112,17 +116,7 @@ NV_STATUS uvm_pmm_sysmem_mappings_add_gpu_mapping(uvm_pmm_sysmem_mappings_t *sys
 
     uvm_mutex_lock(&sysmem_mappings->reverse_map_lock);
     for (key = base_key; key < base_key + num_pages; ++key) {
-        int ret = radix_tree_insert(&sysmem_mappings->reverse_map_tree, key, new_reverse_map);
-        if (ret != 0) {
-            NvU64 remove_key;
-
-            for (remove_key = base_key; remove_key < key; ++remove_key)
-                (void *)radix_tree_delete(&sysmem_mappings->reverse_map_tree, remove_key);
-
-            kmem_cache_free(g_reverse_page_map_cache, new_reverse_map);
-            status = errno_to_nv_status(ret);
-            break;
-        }
+        table_set(sysmem_mappings->reverse_map_tree, pointer_from_u64(key), new_reverse_map);
     }
     uvm_mutex_unlock(&sysmem_mappings->reverse_map_lock);
 
@@ -147,7 +141,7 @@ static void pmm_sysmem_mappings_remove_gpu_mapping(uvm_pmm_sysmem_mappings_t *sy
 
     uvm_mutex_lock(&sysmem_mappings->reverse_map_lock);
 
-    reverse_map = radix_tree_delete(&sysmem_mappings->reverse_map_tree, base_key);
+    reverse_map = table_remove(sysmem_mappings->reverse_map_tree, pointer_from_u64(base_key));
     if (check_mapping)
         UVM_ASSERT(reverse_map);
 
@@ -159,7 +153,7 @@ static void pmm_sysmem_mappings_remove_gpu_mapping(uvm_pmm_sysmem_mappings_t *sy
     uvm_assert_mutex_locked(&reverse_map->va_block->lock);
 
     for (key = base_key + 1; key < base_key + uvm_va_block_region_num_pages(reverse_map->region); ++key) {
-        uvm_reverse_map_t *curr_reverse_map = radix_tree_delete(&sysmem_mappings->reverse_map_tree, key);
+        uvm_reverse_map_t *curr_reverse_map = table_remove(sysmem_mappings->reverse_map_tree, pointer_from_u64(key));
         UVM_ASSERT(curr_reverse_map == reverse_map);
     }
 
@@ -196,7 +190,7 @@ void uvm_pmm_sysmem_mappings_reparent_gpu_mapping(uvm_pmm_sysmem_mappings_t *sys
 
     uvm_mutex_lock(&sysmem_mappings->reverse_map_lock);
 
-    reverse_map = radix_tree_lookup(&sysmem_mappings->reverse_map_tree, base_key);
+    reverse_map = table_find(sysmem_mappings->reverse_map_tree, pointer_from_u64(base_key));
     UVM_ASSERT(reverse_map);
 
     // Compute virt address by hand since the old VA block may be messed up
@@ -233,7 +227,7 @@ NV_STATUS uvm_pmm_sysmem_mappings_split_gpu_mappings(uvm_pmm_sysmem_mappings_t *
         return NV_OK;
 
     uvm_mutex_lock(&sysmem_mappings->reverse_map_lock);
-    orig_reverse_map = radix_tree_lookup(&sysmem_mappings->reverse_map_tree, base_key);
+    orig_reverse_map = table_find(sysmem_mappings->reverse_map_tree, pointer_from_u64(base_key));
     uvm_mutex_unlock(&sysmem_mappings->reverse_map_lock);
 
     // We can access orig_reverse_map outside the tree lock because we hold the
@@ -278,11 +272,7 @@ NV_STATUS uvm_pmm_sysmem_mappings_split_gpu_mappings(uvm_pmm_sysmem_mappings_t *
         NvU64 key;
 
         for (key = base_key + num_pages * subregion; key < base_key + num_pages * (subregion + 1); ++key) {
-            void **slot = radix_tree_lookup_slot(&sysmem_mappings->reverse_map_tree, key);
-            UVM_ASSERT(slot);
-            UVM_ASSERT(radix_tree_deref_slot(slot) == orig_reverse_map);
-
-            NV_RADIX_TREE_REPLACE_SLOT(&sysmem_mappings->reverse_map_tree, slot, new_reverse_maps[subregion - 1]);
+            table_set(sysmem_mappings->reverse_map_tree, pointer_from_u64(key), new_reverse_maps[subregion - 1]);
         }
     }
 
@@ -316,7 +306,7 @@ void uvm_pmm_sysmem_mappings_merge_gpu_mappings(uvm_pmm_sysmem_mappings_t *sysme
     uvm_mutex_lock(&sysmem_mappings->reverse_map_lock);
 
     // Find the first mapping in the region
-    first_reverse_map = radix_tree_lookup(&sysmem_mappings->reverse_map_tree, base_key);
+    first_reverse_map = table_find(sysmem_mappings->reverse_map_tree, pointer_from_u64(base_key));
     UVM_ASSERT(first_reverse_map);
     num_mapping_pages = uvm_va_block_region_num_pages(first_reverse_map->region);
     UVM_ASSERT(num_pages >= num_mapping_pages);
@@ -332,29 +322,23 @@ void uvm_pmm_sysmem_mappings_merge_gpu_mappings(uvm_pmm_sysmem_mappings_t *sysme
     running_page_index = first_reverse_map->region.outer;
     while (key < base_key + num_pages) {
         uvm_reverse_map_t *reverse_map = NULL;
-        void **slot = radix_tree_lookup_slot(&sysmem_mappings->reverse_map_tree, key);
         size_t slot_index;
-        UVM_ASSERT(slot);
 
-        reverse_map = radix_tree_deref_slot(slot);
+        reverse_map = table_find(sysmem_mappings->reverse_map_tree, pointer_from_u64(key));
         UVM_ASSERT(reverse_map);
         UVM_ASSERT(reverse_map != first_reverse_map);
         UVM_ASSERT(reverse_map->va_block == first_reverse_map->va_block);
         UVM_ASSERT(uvm_id_equal(reverse_map->owner, first_reverse_map->owner));
         UVM_ASSERT(reverse_map->region.first == running_page_index);
 
-        NV_RADIX_TREE_REPLACE_SLOT(&sysmem_mappings->reverse_map_tree, slot, first_reverse_map);
+        table_set(sysmem_mappings->reverse_map_tree, pointer_from_u64(key), first_reverse_map);
 
         num_mapping_pages = uvm_va_block_region_num_pages(reverse_map->region);
         UVM_ASSERT(IS_ALIGNED(key, num_mapping_pages));
         UVM_ASSERT(key + num_mapping_pages <= base_key + num_pages);
 
         for (slot_index = 1; slot_index < num_mapping_pages; ++slot_index) {
-            slot = radix_tree_lookup_slot(&sysmem_mappings->reverse_map_tree, key + slot_index);
-            UVM_ASSERT(slot);
-            UVM_ASSERT(reverse_map == radix_tree_deref_slot(slot));
-
-            NV_RADIX_TREE_REPLACE_SLOT(&sysmem_mappings->reverse_map_tree, slot, first_reverse_map);
+            table_set(sysmem_mappings->reverse_map_tree, pointer_from_u64(key + slot_index), first_reverse_map);
         }
 
         key += num_mapping_pages;
@@ -390,7 +374,7 @@ size_t uvm_pmm_sysmem_mappings_dma_to_virt(uvm_pmm_sysmem_mappings_t *sysmem_map
 
     key = base_key;
     do {
-        uvm_reverse_map_t *reverse_map = radix_tree_lookup(&sysmem_mappings->reverse_map_tree, key);
+        uvm_reverse_map_t *reverse_map = table_find(sysmem_mappings->reverse_map_tree, pointer_from_u64(key));
 
         if (reverse_map) {
             size_t num_chunk_pages = uvm_va_block_region_num_pages(reverse_map->region);
@@ -451,10 +435,10 @@ uvm_chunk_size_t uvm_cpu_chunk_get_size(uvm_cpu_chunk_t *chunk)
 }
 
 #if UVM_CPU_CHUNK_SIZE_IS_PAGE_SIZE()
-struct page *uvm_cpu_chunk_get_cpu_page(uvm_va_block_t *va_block, uvm_cpu_chunk_t *chunk, uvm_page_index_t page_index)
+u64 uvm_cpu_chunk_get_cpu_page(uvm_va_block_t *va_block, uvm_cpu_chunk_t *chunk, uvm_page_index_t page_index)
 {
     UVM_ASSERT(chunk);
-    return chunk;
+    return *chunk;
 }
 
 void uvm_cpu_chunk_put(uvm_cpu_chunk_t *chunk)
@@ -556,23 +540,19 @@ NV_STATUS uvm_cpu_chunk_alloc(uvm_va_block_t *va_block,
                               uvm_cpu_chunk_t **new_chunk)
 {
     uvm_cpu_chunk_t *chunk = NULL;
-    gfp_t alloc_flags;
     NV_STATUS status;
 
     UVM_ASSERT(!uvm_page_mask_test(&va_block->cpu.allocated, page_index));
     UVM_ASSERT(new_chunk);
 
-    alloc_flags = (mm ? NV_UVM_GFP_FLAGS_ACCOUNT : NV_UVM_GFP_FLAGS) | GFP_HIGHUSER;
-
-    if (!uvm_va_block_page_resident_processors_count(va_block, page_index))
-        alloc_flags |= __GFP_ZERO;
-
-    chunk = alloc_pages(alloc_flags, 0);
-    if (!chunk)
+    chunk = allocate((heap)heap_physical(get_kernel_heaps()), PAGESIZE);
+    if (chunk == INVALID_ADDRESS)
         return NV_ERR_NO_MEMORY;
 
-    if (alloc_flags & __GFP_ZERO)
+    if (!uvm_va_block_page_resident_processors_count(va_block, page_index)) {
+        zero(pointer_from_u64(virt_from_linear_backed_phys(u64_from_pointer(chunk))), PAGESIZE);
         SetPageDirty(chunk);
+    }
 
     status = uvm_cpu_chunk_insert_in_block(va_block, chunk, page_index);
     if (status != NV_OK) {

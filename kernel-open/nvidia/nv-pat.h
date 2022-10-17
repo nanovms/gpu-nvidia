@@ -25,7 +25,7 @@
 #ifndef _NV_PAT_H_
 #define _NV_PAT_H_
 
-#include "nv-linux.h"
+#include "nv-nanos.h"
 
 
 #if defined(NV_ENABLE_PAT_SUPPORT)

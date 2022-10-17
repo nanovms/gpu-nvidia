@@ -23,14 +23,13 @@
 
 #include "os-interface.h"
 #include "nv.h"
-#include "nv-linux.h"
+#include "nv-nanos.h"
 
 static inline void nv_set_contig_memory_uc(nvidia_pte_t *page_ptr, NvU32 num_pages)
 {
 #if defined(NV_SET_MEMORY_UC_PRESENT)
-    struct page *page = NV_GET_PAGE_STRUCT(page_ptr->phys_addr);
-    unsigned long addr = (unsigned long)page_address(page);
-    set_memory_uc(addr, num_pages);
+    unsigned long addr = page_ptr->virt_addr;
+    update_map_flags(addr, num_pages, pageflags_writable(pageflags_device()));
 #elif defined(NV_SET_PAGES_UC_PRESENT)
     struct page *page = NV_GET_PAGE_STRUCT(page_ptr->phys_addr);
     set_pages_uc(page, num_pages);
@@ -40,9 +39,8 @@ static inline void nv_set_contig_memory_uc(nvidia_pte_t *page_ptr, NvU32 num_pag
 static inline void nv_set_contig_memory_wb(nvidia_pte_t *page_ptr, NvU32 num_pages)
 {
 #if defined(NV_SET_MEMORY_UC_PRESENT)
-    struct page *page = NV_GET_PAGE_STRUCT(page_ptr->phys_addr);
-    unsigned long addr = (unsigned long)page_address(page);
-    set_memory_wb(addr, num_pages);
+    unsigned long addr = page_ptr->virt_addr;
+    update_map_flags(addr, num_pages, pageflags_writable(pageflags_memory()));
 #elif defined(NV_SET_PAGES_UC_PRESENT)
     struct page *page = NV_GET_PAGE_STRUCT(page_ptr->phys_addr);
     set_pages_wb(page, num_pages);
@@ -104,7 +102,7 @@ static inline void nv_set_memory_array_type(
 }
 
 static inline void nv_set_pages_array_type(
-    struct page **pages,
+    NvU64 *pages,
     NvU32 num_pages,
     NvU32 type
 )
@@ -160,9 +158,6 @@ static inline void nv_set_memory_type(nv_alloc_t *at, NvU32 type)
     unsigned long *pages = NULL;
 #endif
 
-    nvidia_pte_t *page_ptr;
-    struct page *page;
-
     if (nv_set_memory_array_type_present(type))
     {
         status = os_alloc_mem((void **)&pages,
@@ -187,8 +182,6 @@ static inline void nv_set_memory_type(nv_alloc_t *at, NvU32 type)
     {
         for (i = 0; i < at->num_pages; i++)
         {
-            page_ptr = at->page_table[i];
-            page = NV_GET_PAGE_STRUCT(page_ptr->phys_addr);
 #if defined(NV_SET_MEMORY_ARRAY_UC_PRESENT)
             pages[i] = (unsigned long)page_address(page);
 #elif defined(NV_SET_PAGES_ARRAY_UC_PRESENT)
@@ -215,67 +208,6 @@ static inline void nv_set_memory_type(nv_alloc_t *at, NvU32 type)
     }
 }
 
-static NvU64 nv_get_max_sysmem_address(void)
-{
-    NvU64 global_max_pfn = 0ULL;
-    int node_id;
-
-    for_each_online_node(node_id)
-    {
-        global_max_pfn = max(global_max_pfn, node_end_pfn(node_id));
-    }
-
-    return ((global_max_pfn + 1) << PAGE_SHIFT) - 1;
-}
-
-static unsigned int nv_compute_gfp_mask(
-    nv_state_t *nv,
-    nv_alloc_t *at
-)
-{
-    unsigned int gfp_mask = NV_GFP_KERNEL;
-    struct device *dev = at->dev;
-
-    /*
-     * If we know that SWIOTLB is enabled (and therefore we avoid calling the
-     * kernel to DMA-remap the pages), or if we are using dma_direct (which may
-     * transparently use the SWIOTLB for pages that are unaddressable by the
-     * device, in kernel versions 5.0 and later), limit our allocation pool
-     * to the first 4GB to avoid allocating pages outside of our device's
-     * addressable limit.
-     * Also, limit the allocation to the first 4GB if explicitly requested by
-     * setting the "nv->force_dma32_alloc" variable.
-     */
-    if (!nv || !nv_requires_dma_remap(nv) || nv_is_dma_direct(dev) || nv->force_dma32_alloc)
-    {
-        NvU64 max_sysmem_address = nv_get_max_sysmem_address();
-        if ((dev && dev->dma_mask && (*(dev->dma_mask) < max_sysmem_address)) ||
-            (nv && nv->force_dma32_alloc))
-        {
-            gfp_mask = NV_GFP_DMA32;
-        }
-    }
-#if defined(__GFP_RETRY_MAYFAIL)
-    gfp_mask |= __GFP_RETRY_MAYFAIL;
-#elif defined(__GFP_NORETRY)
-    gfp_mask |= __GFP_NORETRY;
-#endif
-#if defined(__GFP_ZERO)
-    if (at->flags.zeroed)
-        gfp_mask |= __GFP_ZERO;
-#endif
-#if defined(__GFP_THISNODE)
-    if (at->flags.node0)
-        gfp_mask |= __GFP_THISNODE;
-#endif
-    // Compound pages are required by vm_insert_page for high-order page
-    // allocations
-    if (at->order > 0)
-        gfp_mask |= __GFP_COMP;
-
-    return gfp_mask;
-}
-
 /*
  * This function is needed for allocating contiguous physical memory in xen
  * dom0. Because of the use of xen sw iotlb in xen dom0, memory allocated by
@@ -292,19 +224,12 @@ static NV_STATUS nv_alloc_coherent_pages(
 {
     nvidia_pte_t *page_ptr;
     NvU32 i;
-    unsigned int gfp_mask;
+    backed_heap bh = heap_page_backed(get_kernel_heaps());
     unsigned long virt_addr = 0;
     dma_addr_t bus_addr;
-    nv_linux_state_t *nvl = NV_GET_NVL_FROM_NV_STATE(nv);
-    struct device *dev = nvl->dev;
 
-    gfp_mask = nv_compute_gfp_mask(nv, at);
-
-    virt_addr = (unsigned long)dma_alloc_coherent(dev,
-                                                  at->num_pages * PAGE_SIZE,
-                                                  &bus_addr,
-                                                  gfp_mask);
-    if (!virt_addr)
+    virt_addr = u64_from_pointer(alloc_map(bh, at->num_pages * PAGE_SIZE, &bus_addr));
+    if (virt_addr == INVALID_PHYSICAL)
     {
         nv_printf(NV_DBG_MEMINFO,
             "NVRM: VM: %s: failed to allocate memory\n", __FUNCTION__);
@@ -316,8 +241,8 @@ static NV_STATUS nv_alloc_coherent_pages(
         page_ptr = at->page_table[i];
 
         page_ptr->virt_addr = virt_addr + i * PAGE_SIZE;
-        page_ptr->phys_addr = virt_to_phys((void *)page_ptr->virt_addr);
         page_ptr->dma_addr  = bus_addr + i * PAGE_SIZE;
+        page_ptr->phys_addr = page_ptr->dma_addr;
     }
 
     if (at->cache_type != NV_MEMORY_CACHED)
@@ -336,7 +261,7 @@ static void nv_free_coherent_pages(
 )
 {
     nvidia_pte_t *page_ptr;
-    struct device *dev = at->dev;
+    backed_heap bh = heap_page_backed(get_kernel_heaps());
 
     page_ptr = at->page_table[0];
 
@@ -347,8 +272,7 @@ static void nv_free_coherent_pages(
                                   NV_MEMORY_WRITEBACK);
     }
 
-    dma_free_coherent(dev, at->num_pages * PAGE_SIZE,
-                      (void *)page_ptr->virt_addr, page_ptr->dma_addr);
+    dealloc_unmap(bh, (void *)page_ptr->virt_addr, page_ptr->dma_addr, at->num_pages * PAGE_SIZE);
 }
 
 NV_STATUS nv_alloc_contig_pages(
@@ -359,7 +283,6 @@ NV_STATUS nv_alloc_contig_pages(
     NV_STATUS status;
     nvidia_pte_t *page_ptr;
     NvU32 i, j;
-    unsigned int gfp_mask;
     unsigned long virt_addr = 0;
     NvU64 phys_addr;
     struct device *dev = at->dev;
@@ -378,16 +301,15 @@ NV_STATUS nv_alloc_contig_pages(
 
 
 
-    at->order = get_order(at->num_pages * PAGE_SIZE);
-    gfp_mask = nv_compute_gfp_mask(nv, at);
+    at->order = find_order(at->num_pages);
 
     if (at->flags.node0)
     {
-        NV_ALLOC_PAGES_NODE(virt_addr, 0, at->order, gfp_mask);
+        NV_ALLOC_PAGES_NODE(virt_addr, 0, at->order);
     }
     else
     {
-        NV_GET_FREE_PAGES(virt_addr, at->order, gfp_mask);
+        NV_GET_FREE_PAGES(virt_addr, at->order);
     }
     if (virt_addr == 0)
     {
@@ -505,34 +427,31 @@ NV_STATUS nv_alloc_system_pages(
     NV_STATUS status;
     nvidia_pte_t *page_ptr;
     NvU32 i, j;
-    unsigned int gfp_mask;
+    backed_heap bh = heap_page_backed(get_kernel_heaps());
     unsigned long virt_addr = 0;
     NvU64 phys_addr;
     struct device *dev = at->dev;
     dma_addr_t bus_addr;
 
     nv_printf(NV_DBG_MEMINFO,
-            "NVRM: VM: %u: %u pages\n", __FUNCTION__, at->num_pages);
-
-    gfp_mask = nv_compute_gfp_mask(nv, at);
+            "NVRM: VM: %s: %u pages\n", __FUNCTION__, at->num_pages);
 
     for (i = 0; i < at->num_pages; i++)
     {
         if (at->flags.unencrypted && (dev != NULL))
         {
-            virt_addr = (unsigned long)dma_alloc_coherent(dev,
-                                                          PAGE_SIZE,
-                                                          &bus_addr,
-                                                          gfp_mask);
+            virt_addr = u64_from_pointer(alloc_map(bh, PAGE_SIZE, &bus_addr));
+            if (virt_addr == INVALID_PHYSICAL)
+                virt_addr = 0;
             at->flags.coherent = NV_TRUE;
         }
         else if (at->flags.node0)
         {
-            NV_ALLOC_PAGES_NODE(virt_addr, 0, 0, gfp_mask);
+            NV_ALLOC_PAGES_NODE(virt_addr, 0, 0);
         }
         else
         {
-            NV_GET_FREE_PAGES(virt_addr, 0, gfp_mask);
+            NV_GET_FREE_PAGES(virt_addr, 0);
         }
 
         if (virt_addr == 0)
@@ -603,8 +522,7 @@ failed:
             NV_MAYBE_UNRESERVE_PAGE(page_ptr);
             if (at->flags.coherent)
             {
-                dma_free_coherent(dev, PAGE_SIZE, (void *)page_ptr->virt_addr,
-                                  page_ptr->dma_addr);
+                dealloc_unmap(bh, (void *)page_ptr->virt_addr, page_ptr->dma_addr, PAGE_SIZE);
             }
             else
             {
@@ -622,7 +540,7 @@ void nv_free_system_pages(
 {
     nvidia_pte_t *page_ptr;
     unsigned int i;
-    struct device *dev = at->dev;
+    backed_heap bh = heap_page_backed(get_kernel_heaps());
 
     nv_printf(NV_DBG_MEMINFO,
             "NVRM: VM: %s: %u pages\n", __FUNCTION__, at->num_pages);
@@ -649,8 +567,7 @@ void nv_free_system_pages(
         NV_MAYBE_UNRESERVE_PAGE(page_ptr);
         if (at->flags.coherent)
         {
-            dma_free_coherent(dev, PAGE_SIZE, (void *)page_ptr->virt_addr,
-                              page_ptr->dma_addr);
+            dealloc_unmap(bh, (void *)page_ptr->virt_addr, page_ptr->dma_addr, PAGE_SIZE);
         }
         else
         {
@@ -660,7 +577,7 @@ void nv_free_system_pages(
 }
 
 NvUPtr nv_vm_map_pages(
-    struct page **pages,
+    nvidia_pte_t **pages,
     NvU32 count,
     NvBool cached,
     NvBool unencrypted
@@ -696,31 +613,4 @@ void nv_vm_unmap_pages(
     }
 
     nv_vunmap(virt_addr, count);
-}
-
-void nv_address_space_init_once(struct address_space *mapping)
-{
-#if defined(NV_ADDRESS_SPACE_INIT_ONCE_PRESENT)
-    address_space_init_once(mapping);
-#else
-    memset(mapping, 0, sizeof(*mapping));
-    INIT_RADIX_TREE(&mapping->page_tree, GFP_ATOMIC);
-
-#if defined(NV_ADDRESS_SPACE_HAS_RWLOCK_TREE_LOCK)
-    //
-    // The .tree_lock member variable was changed from type rwlock_t, to
-    // spinlock_t, on 25 July 2008, by mainline commit
-    // 19fd6231279be3c3bdd02ed99f9b0eb195978064.
-    //
-    rwlock_init(&mapping->tree_lock);
-#else
-    spin_lock_init(&mapping->tree_lock);
-#endif
-
-    spin_lock_init(&mapping->i_mmap_lock);
-    INIT_LIST_HEAD(&mapping->private_list);
-    spin_lock_init(&mapping->private_lock);
-    INIT_RAW_PRIO_TREE_ROOT(&mapping->i_mmap);
-    INIT_LIST_HEAD(&mapping->i_mmap_nonlinear);
-#endif /* !NV_ADDRESS_SPACE_INIT_ONCE_PRESENT */
 }

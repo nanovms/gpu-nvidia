@@ -101,6 +101,8 @@ NV_STATUS   NV_API_CALL  os_pci_write_word           (void *, NvU32, NvU16);
 NV_STATUS   NV_API_CALL  os_pci_write_dword          (void *, NvU32, NvU32);
 NvBool      NV_API_CALL  os_pci_remove_supported     (void);
 void        NV_API_CALL  os_pci_remove               (void *);
+void*       NV_API_CALL  os_pci_alloc_handle         (NvU32, NvU8, NvU8, NvU8, NvU16 *, NvU16 *);
+void        NV_API_CALL  os_pci_dealloc_handle       (void *);
 void*       NV_API_CALL  os_map_kernel_space         (NvU64, NvU64, NvU32);
 void        NV_API_CALL  os_unmap_kernel_space       (void *, NvU64);
 void*       NV_API_CALL  os_map_user_space           (NvU64, NvU64, NvU32, NvU32, void **);

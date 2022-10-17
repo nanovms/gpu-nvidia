@@ -21,7 +21,7 @@
 
 *******************************************************************************/
 
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_global.h"
 #include "uvm_gpu.h"
 #include "uvm_hal.h"
@@ -201,7 +201,6 @@ void uvm_hal_pascal_fault_buffer_parse_entry(uvm_parent_gpu_t *parent_gpu,
                                              NvU32 index,
                                              uvm_fault_buffer_entry_t *buffer_entry)
 {
-    NV_STATUS status;
     NvU32 *fault_entry;
     NvU64 addr_hi, addr_lo;
     NvU64 timestamp_hi, timestamp_lo;
@@ -209,7 +208,6 @@ void uvm_hal_pascal_fault_buffer_parse_entry(uvm_parent_gpu_t *parent_gpu,
     NvU32 utlb_id;
 
     BUILD_BUG_ON(NVB069_FAULT_BUF_SIZE > UVM_GPU_MMU_MAX_FAULT_PACKET_SIZE);
-    status = NV_OK;
 
     fault_entry = get_fault_buffer_entry(parent_gpu, index);
 

@@ -27,7 +27,7 @@
 #include "uvm_forward_decl.h"
 #include "uvm_lock.h"
 #include "uvm_common.h"
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 
 #define UVM_THREAD_CONTEXT_TABLE_SIZE 64
 
@@ -62,7 +62,7 @@ struct uvm_thread_context_struct
     // Pointer to the thread (task) associated with the context
     //
     // This field is ignored in interrupt paths
-    struct task_struct *task;
+    thread task;
 
     // This context is present at the given array index if array_index is less
     // than UVM_THREAD_CONTEXT_ARRAY_SIZE; otherwise is in the tree.
@@ -73,7 +73,7 @@ struct uvm_thread_context_struct
     // Pointer to enclosing node (if any) in red-black tree
     //
     // This field is ignored in interrupt paths
-    struct rb_node node;
+    struct rbnode node;
 };
 
 bool uvm_thread_context_wrapper_is_used(void);

@@ -358,8 +358,7 @@ NV_STATUS uvm_bit_locks_init(uvm_bit_locks_t *bit_locks, size_t count, uvm_lock_
     // To prevent us from using kmalloc() for a huge allocation, warn if the
     // allocation size gets bigger than what we are comfortable with for
     // kmalloc() in uvm_kvmalloc().
-    size_t size = sizeof(unsigned long) * BITS_TO_LONGS(count);
-    WARN_ON_ONCE(size > UVM_KMALLOC_THRESHOLD);
+    size_t size = pad(count, 64) / 8;
 
     bit_locks->bits = kzalloc(size, NV_UVM_GFP_FLAGS);
     if (!bit_locks->bits)

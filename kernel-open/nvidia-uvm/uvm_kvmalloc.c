@@ -22,7 +22,7 @@
 *******************************************************************************/
 
 #include "uvm_common.h"
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_global.h"
 #include "uvm_kvmalloc.h"
 #include "uvm_rb_tree.h"
@@ -76,7 +76,7 @@ static struct
     // Table of all outstanding allocations
     uvm_rb_tree_t allocation_info;
 
-    struct kmem_cache *info_cache;
+    heap info_cache;
 } g_uvm_leak_checker;
 
 // Default to byte-count-only leak checking for non-release builds. This can
@@ -252,11 +252,12 @@ static void *alloc_internal(size_t size, bool zero_memory)
 
     // Make sure that the allocation pointer is suitably-aligned for a natively-
     // sized allocation.
-    BUILD_BUG_ON(offsetof(uvm_vmalloc_hdr_t, ptr) != sizeof(void *));
+    BUILD_BUG_ON(offsetof(uvm_vmalloc_hdr_t *, ptr) != sizeof(void *));
 
     // Make sure that (sizeof(hdr) + size) is what it should be
-    BUILD_BUG_ON(sizeof(uvm_vmalloc_hdr_t) != offsetof(uvm_vmalloc_hdr_t, ptr));
+    BUILD_BUG_ON(sizeof(uvm_vmalloc_hdr_t) != offsetof(uvm_vmalloc_hdr_t *, ptr));
 
+    assert(size <= (1 << 16));
     if (size <= UVM_KMALLOC_THRESHOLD) {
         if (zero_memory)
             return kzalloc(size, NV_UVM_GFP_FLAGS);

@@ -24,7 +24,7 @@
 #ifndef _NV_DMABUF_H_
 #define _NV_DMABUF_H_
 
-#include "nv-linux.h"
+#include "nv-nanos.h"
 
 NV_STATUS nv_dma_buf_export(nv_state_t *, nv_ioctl_export_to_dma_buf_fd_t *);
 

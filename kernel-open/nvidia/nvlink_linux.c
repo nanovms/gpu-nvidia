@@ -27,17 +27,10 @@
 #include "nvlink_linux.h"
 #include "nvlink_errors.h"
 #include "nvlink_export.h"
-#include "nv-linux.h"
+#include "nv-nanos.h"
 #include "nv-procfs.h"
 #include "nv-time.h"
 #include "nvlink_caps.h"
-
-#include <linux/module.h>
-#include <linux/major.h>
-#include <linux/cdev.h>
-#include <linux/device.h>
-#include <linux/string.h>
-#include <linux/mutex.h>
 
 #define MAX_ERROR_STRING           512
 
@@ -57,7 +50,6 @@ typedef struct
 {
     struct mutex    lock;
     NvBool          initialized;
-    struct cdev     cdev;
     dev_t           devno;
     int             opened;
     int             major_devnum;
@@ -78,21 +70,9 @@ static struct proc_dir_entry *nvlink_procfs_dir = NULL;
 
 #if defined(CONFIG_PROC_FS)
     static int nvlink_is_procfs_available = 1;
-#else
-    static int nvlink_is_procfs_available = 0;
 #endif
 
 static struct proc_dir_entry *nvlink_permissions = NULL;
-
-static int nv_procfs_read_permissions(struct seq_file *s, void *v)
-{
-    // Restrict device node permissions - 0666.
-    seq_printf(s, "%s: %u\n", "DeviceFileMode", 438);
-
-    return 0;
-}
-
-NV_DEFINE_SINGLE_NVLINK_PROCFS_FILE(permissions);
 
 static void nvlink_permissions_exit(void)
 {
@@ -101,26 +81,11 @@ static void nvlink_permissions_exit(void)
         return;
     }
 
-    NV_REMOVE_PROC_ENTRY(nvlink_permissions);
     nvlink_permissions = NULL;
 }
 
 static int nvlink_permissions_init(void)
 {
-    if (!nvlink_procfs_dir)
-    {
-        return -EACCES;
-    }
-
-    nvlink_permissions = NV_CREATE_PROC_FILE("permissions",
-                                             nvlink_procfs_dir,
-                                             permissions,
-                                             NULL);
-    if (!nvlink_permissions)
-    {
-        return -EACCES;
-    }
-
     return 0;
 }
 
@@ -133,24 +98,12 @@ static void nvlink_procfs_exit(void)
         return;
     }
 
-    NV_REMOVE_PROC_ENTRY(nvlink_procfs_dir);
     nvlink_procfs_dir = NULL;
 }
 
 static int nvlink_procfs_init(void)
 {
     int rc = 0;
-
-    if (!nvlink_is_procfs_available)
-    {
-        return -EACCES;
-    }
-
-    nvlink_procfs_dir = NV_CREATE_PROC_DIR(NVLINK_PROCFS_DIR, NULL);
-    if (!nvlink_procfs_dir)
-    {
-        return -EACCES;
-    }
 
     rc = nvlink_permissions_init();
     if (rc < 0)
@@ -167,152 +120,9 @@ cleanup:
     return rc;
 }
 
-static int nvlink_fops_open(struct inode *inode, struct file *filp)
-{
-    int rc = 0;
-    nvlink_file_private_t *private = NULL;
-
-    nvlink_print(NVLINK_DBG_INFO, "nvlink driver open\n");
-
-    mutex_lock(&nvlink_drvctx.lock);
-
-    // nvlink lib driver is currently exclusive open.
-    if (nvlink_drvctx.opened)
-    {
-        rc = -EBUSY;
-        goto open_error;
-    }
-
-    private = (nvlink_file_private_t *)nvlink_malloc(sizeof(*private));
-    if (private == NULL)
-    {
-        rc = -ENOMEM;
-        goto open_error;
-    }
-
-    private->capability_fds.fabric_mgmt = -1;
-    NVLINK_SET_FILE_PRIVATE(filp, private);
-
-    // mark our state as opened
-    nvlink_drvctx.opened = NV_TRUE;
-
-open_error:
-    mutex_unlock(&nvlink_drvctx.lock);
-    return rc;
-}
-
-static int nvlink_fops_release(struct inode *inode, struct file *filp)
-{
-    nvlink_file_private_t *private = NVLINK_GET_FILE_PRIVATE(filp);
-
-    nvlink_print(NVLINK_DBG_INFO, "nvlink driver close\n");
-
-    WARN_ON(private == NULL);
-
-    mutex_lock(&nvlink_drvctx.lock);
-
-    if (private->capability_fds.fabric_mgmt > 0)
-    {
-        nvlink_cap_release(private->capability_fds.fabric_mgmt);
-        private->capability_fds.fabric_mgmt = -1;
-    }
-
-    nvlink_free(filp->private_data);
-    NVLINK_SET_FILE_PRIVATE(filp, NULL);
-
-    // mark the device as not opened
-    nvlink_drvctx.opened = NV_FALSE;
-
-    mutex_unlock(&nvlink_drvctx.lock);
-
-    return 0;
-}
-
-static int nvlink_fops_ioctl(struct inode *inode,
-                             struct file *filp,
-                             unsigned int cmd,
-                             unsigned long arg)
-{
-    nvlink_ioctrl_params ctrl_params = {0};
-    int param_size = _IOC_SIZE(cmd);
-    void *param_buf = NULL;
-    NvlStatus ret_val = 0;
-    int rc = 0;
-
-    // no buffer for simple _IO types
-    if (param_size)
-    {
-        // allocate a buffer to hold user input
-        param_buf = kzalloc(param_size, GFP_KERNEL);
-        if (NULL == param_buf) 
-        {
-            rc = -ENOMEM;
-            goto nvlink_ioctl_fail;
-        }
-
-        // copy user input to kernel buffers. Simple _IOR() ioctls can skip this step.
-        if (_IOC_DIR(cmd) & _IOC_WRITE)
-        {
-            // copy user input to local buffer
-            if (copy_from_user(param_buf, (const void *)arg, param_size))
-            {
-                rc = -EFAULT;
-                goto nvlink_ioctl_fail;
-            }
-        }
-    }
-
-    ctrl_params.osPrivate = filp->private_data;
-    ctrl_params.cmd = _IOC_NR(cmd);
-    ctrl_params.buf = param_buf;
-    ctrl_params.size = param_size;
-
-    ret_val = nvlink_lib_ioctl_ctrl(&ctrl_params);
-    if (NVL_SUCCESS != ret_val)
-    {
-        rc = -EINVAL;
-        goto nvlink_ioctl_fail;
-    }
-
-    //  no copy for write-only ioctl
-    if ((param_size) && (_IOC_DIR(cmd) & _IOC_READ))
-    {
-        if (copy_to_user((void *)arg, ctrl_params.buf, ctrl_params.size))
-        {
-            rc = -EFAULT;
-            goto nvlink_ioctl_fail;
-        }
-    }
-
-nvlink_ioctl_fail:
-    if (param_buf) 
-    {
-        kfree(param_buf);
-    }
-    return rc;
-}
-
 #define NV_FILE_INODE(file) (file)->f_inode
 
-static long nvlink_fops_unlocked_ioctl(struct file *file,
-                                       unsigned int cmd,
-                                       unsigned long arg)
-{
-    return nvlink_fops_ioctl(NV_FILE_INODE(file), file, cmd, arg);
-}
-
-
-static const struct file_operations nvlink_fops = {
-    .owner           = THIS_MODULE,
-    .open            = nvlink_fops_open,
-    .release         = nvlink_fops_release,
-#if defined(NV_FILE_OPERATIONS_HAS_IOCTL)
-    .ioctl           = nvlink_fops_ioctl,   
-#endif    
-    .unlocked_ioctl  = nvlink_fops_unlocked_ioctl,
-};
-
-int __init nvlink_core_init(void)
+int nvlink_core_init(void)
 {
     NvlStatus ret_val;
     int rc;
@@ -323,7 +133,7 @@ int __init nvlink_core_init(void)
         return -EBUSY;
     }
 
-    mutex_init(&nvlink_drvctx.lock);
+    mutex_init(&nvlink_drvctx.lock, 0);
 
     ret_val = nvlink_lib_initialize();
     if (NVL_SUCCESS != ret_val)
@@ -331,27 +141,6 @@ int __init nvlink_core_init(void)
         nvlink_print(NVLINK_DBG_ERRORS,  "Failed to initialize driver : %d\n", ret_val);
         rc = -ENODEV;
         goto nvlink_lib_initialize_fail;
-    }
-
-    rc = alloc_chrdev_region(&nvlink_drvctx.devno, 0, NVLINK_NUM_MINOR_DEVICES,
-                             NVLINK_DEVICE_NAME);
-    if (rc < 0)
-    {
-        nvlink_print(NVLINK_DBG_ERRORS, "alloc_chrdev_region failed: %d\n", rc);
-        goto alloc_chrdev_region_fail;
-    }
-
-    nvlink_drvctx.major_devnum = MAJOR(nvlink_drvctx.devno);
-    nvlink_print(NVLINK_DBG_INFO, "Nvlink Core is being initialized, major device number %d\n",
-                 nvlink_drvctx.major_devnum);
-
-    cdev_init(&nvlink_drvctx.cdev, &nvlink_fops);
-    nvlink_drvctx.cdev.owner = THIS_MODULE;
-    rc = cdev_add(&nvlink_drvctx.cdev, nvlink_drvctx.devno, NVLINK_NUM_MINOR_DEVICES);
-    if (rc < 0)
-    {
-        nvlink_print(NVLINK_DBG_ERRORS, " Unable to create cdev\n");
-        goto cdev_add_fail;
     }
 
     rc = nvlink_procfs_init();
@@ -375,16 +164,9 @@ cap_init_fail:
     nvlink_procfs_exit();
 
 procfs_init_fail:
-    cdev_del(&nvlink_drvctx.cdev);
-
-cdev_add_fail:
-    unregister_chrdev_region(nvlink_drvctx.devno, NVLINK_NUM_MINOR_DEVICES);
-
-alloc_chrdev_region_fail:
     nvlink_lib_unload();
 
 nvlink_lib_initialize_fail:
-    nv_mutex_destroy(&nvlink_drvctx.lock);
     return rc;
 }
 
@@ -399,16 +181,7 @@ void nvlink_core_exit(void)
 
     nvlink_procfs_exit();
 
-    cdev_del(&nvlink_drvctx.cdev);
-
-    unregister_chrdev_region(nvlink_drvctx.devno, NVLINK_NUM_MINOR_DEVICES);
-
     nvlink_lib_unload();
-
-    nv_mutex_destroy(&nvlink_drvctx.lock);
-
-    nvlink_print(NVLINK_DBG_INFO, "Unregistered Nvlink Core, major device number %d\n",
-                 nvlink_drvctx.major_devnum);
 }
 
 void
@@ -424,40 +197,18 @@ nvlink_print
 {
     va_list arglist;
     char    nv_string[MAX_ERROR_STRING];
-    char   *sys_log_level;
-
-    switch (log_level) {
-    case NVLINK_DBG_LEVEL_INFO:
-        sys_log_level = KERN_INFO;
-        break;
-    case NVLINK_DBG_LEVEL_SETUP:
-        sys_log_level = KERN_DEBUG;
-        break;
-    case NVLINK_DBG_LEVEL_USERERRORS:
-        sys_log_level = KERN_NOTICE;
-        break;
-    case NVLINK_DBG_LEVEL_WARNINGS:
-        sys_log_level = KERN_WARNING;
-        break;
-    case NVLINK_DBG_LEVEL_ERRORS:
-        sys_log_level = KERN_ERR;
-        break;
-    default:
-        sys_log_level = KERN_INFO;
-        break;
-    }
 
     va_start(arglist, fmt);
-    vsnprintf(nv_string, sizeof(nv_string), fmt, arglist);
+    os_vsnprintf(nv_string, sizeof(nv_string), fmt, arglist);
     va_end(arglist);
 
     nv_string[sizeof(nv_string) - 1] = '\0';
-    printk("%snvidia-nvlink: %s", sys_log_level, nv_string);
+    printk("nvidia-nvlink: %s", nv_string);
 }
 
 void * nvlink_malloc(NvLength size)
 {
-   return kmalloc(size, GFP_KERNEL);
+   return kmalloc(size, 0);
 }
 
 void nvlink_free(void *ptr)
@@ -467,7 +218,8 @@ void nvlink_free(void *ptr)
 
 char * nvlink_strcpy(char *dest, const char *src)
 {
-    return strcpy(dest, src);
+    runtime_memcpy(dest, src, runtime_strlen(src) + 1);
+    return dest;
 }
 
 int nvlink_strcmp(const char *dest, const char *src)
@@ -486,7 +238,7 @@ int nvlink_snprintf(char *dest, NvLength size, const char *fmt, ...)
     int chars_written;
 
     va_start(arglist, fmt);
-    chars_written = vsnprintf(dest, size, fmt, arglist);
+    chars_written = os_vsnprintf(dest, size, fmt, arglist);
     va_end(arglist);
 
     return chars_written;
@@ -538,13 +290,9 @@ void nvlink_sleep(unsigned int ms)
 
     if (status !=  NV_OK)
     {
-        if (printk_ratelimit())
-        {
-            nvlink_print(NVLINK_DBG_ERRORS, "NVLink: requested sleep duration"
+        nvlink_print(NVLINK_DBG_ERRORS, "NVLink: requested sleep duration"
                          " %d msec exceeded %d msec\n",
                          ms, NV_MAX_ISR_DELAY_MS);
-            WARN_ON(1);
-        }
     }
 }
 
@@ -552,11 +300,7 @@ void nvlink_assert(int cond)
 {
     if ((cond) == 0x0)
     {
-        if (printk_ratelimit())
-        {
-            nvlink_print(NVLINK_DBG_ERRORS, "NVLink: Assertion failed!\n");
-            WARN_ON(1);
-        }
+        nvlink_print(NVLINK_DBG_ERRORS, "NVLink: Assertion failed!\n");
 
         dbg_breakpoint();
     }

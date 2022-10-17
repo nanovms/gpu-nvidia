@@ -24,7 +24,7 @@
 #ifndef __UVM_PERF_EVENTS_H__
 #define __UVM_PERF_EVENTS_H__
 
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_forward_decl.h"
 #include "uvm_processors.h"
 #include "uvm_hal_types.h"
@@ -219,7 +219,7 @@ typedef struct
     uvm_rw_semaphore_t lock;
 
     // Array of callbacks for event notification
-    struct list_head event_callbacks[UVM_PERF_EVENT_COUNT];
+    struct list event_callbacks[UVM_PERF_EVENT_COUNT];
 
     uvm_va_space_t *va_space;
 } uvm_perf_va_space_events_t;

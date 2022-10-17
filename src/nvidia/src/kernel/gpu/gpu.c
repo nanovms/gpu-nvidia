@@ -1223,7 +1223,7 @@ gpuDestruct_IMPL
     int                  typeNum;
     int                  instNum;
     GPUCHILDTYPE        *pChildTypeCur;
-    GPUCHILDINFO         childInfoCur;
+    GPUCHILDINFO         childInfoCur = {0};
     Dynamic            **pChildPtr;
 
     // Call gpuacctDisableAccounting if accounting is enabled since it does some memory deallocation
@@ -1358,7 +1358,7 @@ gpuCreateChildObjects
     PENGDESCRIPTOR pEngDescriptors;
     NvU32          numEngDescriptors;
     PGPUCHILDTYPE  pChildTypeCur;
-    GPUCHILDINFO   childInfoCur;
+    GPUCHILDINFO   childInfoCur = {0};
     NvU32          t, i;
     NV_STATUS      rmStatus = NV_OK;
 

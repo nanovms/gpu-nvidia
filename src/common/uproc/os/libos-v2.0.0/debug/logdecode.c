@@ -27,7 +27,6 @@
 #ifdef NVRM
 
 #    include <core/core.h>
-#    include <stddef.h> // size_t
 
 #    define printf(fmt, ...) portDbgExPrintfLevel(LEVEL_ERROR, fmt, ##__VA_ARGS__)
 #    define snprintf         nvDbgSnprintf

@@ -30,7 +30,7 @@
 #define  __NO_VERSION__
 
 #include "os-interface.h"
-#include "nv-linux.h"
+#include "nv-nanos.h"
 
 #if defined(NV_UVM_ENABLE)
 

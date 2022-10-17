@@ -24,7 +24,7 @@
 #define  __NO_VERSION__
 
 #include "os-interface.h"
-#include "nv-linux.h"
+#include "nv-nanos.h"
 #include "nv-ibmnpu.h"
 #include "nv-rsync.h"
 
@@ -32,7 +32,7 @@
 #include "rmp2pdefines.h"
 
 typedef struct nv_p2p_dma_mapping {
-    struct list_head list_node;
+    struct list list_node;
     struct nvidia_p2p_dma_mapping *dma_mapping;
 } nv_p2p_dma_mapping_t;
 
@@ -41,7 +41,7 @@ typedef struct nv_p2p_mem_info {
     void *data;
     struct nvidia_p2p_page_table page_table;
     struct {
-        struct list_head list_head;
+        struct list list_head;
         struct semaphore lock;
     } dma_mapping_list;
     NvBool bPersistent;
@@ -172,8 +172,7 @@ static void nv_p2p_free_dma_mapping(
     NV_STATUS status;
     NvU32 i;
 
-    peer_dma_dev.dev = &dma_mapping->pci_dev->dev;
-    peer_dma_dev.addressable_range.limit = dma_mapping->pci_dev->dma_mask;
+    peer_dma_dev.addressable_range.limit = infinity;
 
     page_size = nvidia_p2p_page_size_mappings[dma_mapping->page_size_type];
 
@@ -221,7 +220,7 @@ static void nv_p2p_free_page_table(
 
     for (i = 0; i < page_table->entries; i++)
     {
-        NV_KMEM_CACHE_FREE(page_table->pages[i], nvidia_p2p_page_t_cache);
+        NV_KFREE(page_table->pages[i], sizeof(nvidia_p2p_page_t));
     }
 
     if (page_table->gpu_uuid != NULL)
@@ -380,7 +379,7 @@ int nvidia_p2p_get_pages(
 
     //asign length to temporary variable since do_div macro does in-place division
     temp_length = length;
-    do_div(temp_length, page_size);
+    temp_length /= page_size;
     page_count = temp_length;
 
     if (length & (page_size - 1))
@@ -465,7 +464,7 @@ int nvidia_p2p_get_pages(
 
     for (i = 0; i < entries; i++)
     {
-        page = NV_KMEM_CACHE_ALLOC(nvidia_p2p_page_t_cache);
+        NV_KMALLOC(page, sizeof(nvidia_p2p_page_t));
         if (page == NULL)
         {
             status = NV_ERR_NO_MEMORY;
@@ -653,8 +652,7 @@ int nvidia_p2p_dma_map_pages(
     BUG_ON((page_size_type <= NVIDIA_P2P_PAGE_SIZE_4KB) ||
            (page_size_type >= NVIDIA_P2P_PAGE_SIZE_COUNT));
 
-    peer_dma_dev.dev = &peer->dev;
-    peer_dma_dev.addressable_range.limit = peer->dma_mask;
+    peer_dma_dev.addressable_range.limit = infinity;
 
     page_size = nvidia_p2p_page_size_mappings[page_size_type];
 
@@ -834,7 +832,7 @@ int nvidia_p2p_get_rsync_registers(
     nvidia_p2p_rsync_reg_info_t **reg_info
 )
 {
-    nv_linux_state_t *nvl;
+    nv_nanos_state_t *nvl;
     nv_state_t *nv;
     NV_STATUS status;
     void *ptr = NULL;

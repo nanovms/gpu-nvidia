@@ -675,19 +675,19 @@ NV_STATUS uvm_hal_init_table(void)
 {
     NV_STATUS status;
 
-    status = ops_init_from_parent(ce_table, ARRAY_SIZE(ce_table), CE_OP_COUNT, offsetof(uvm_hal_class_ops_t, u.ce_ops));
+    status = ops_init_from_parent(ce_table, ARRAY_SIZE(ce_table), CE_OP_COUNT, offsetof(uvm_hal_class_ops_t *, u.ce_ops));
     if (status != NV_OK) {
         UVM_ERR_PRINT("ops_init_from_parent(ce_table) failed: %s\n", nvstatusToString(status));
         return status;
     }
 
-    status = ops_init_from_parent(host_table, ARRAY_SIZE(host_table), HOST_OP_COUNT, offsetof(uvm_hal_class_ops_t, u.host_ops));
+    status = ops_init_from_parent(host_table, ARRAY_SIZE(host_table), HOST_OP_COUNT, offsetof(uvm_hal_class_ops_t *, u.host_ops));
     if (status != NV_OK) {
         UVM_ERR_PRINT("ops_init_from_parent(host_table) failed: %s\n", nvstatusToString(status));
         return status;
     }
 
-    status = ops_init_from_parent(arch_table, ARRAY_SIZE(arch_table), ARCH_OP_COUNT, offsetof(uvm_hal_class_ops_t, u.arch_ops));
+    status = ops_init_from_parent(arch_table, ARRAY_SIZE(arch_table), ARCH_OP_COUNT, offsetof(uvm_hal_class_ops_t *, u.arch_ops));
     if (status != NV_OK) {
         UVM_ERR_PRINT("ops_init_from_parent(arch_table) failed: %s\n", nvstatusToString(status));
         return status;
@@ -696,7 +696,7 @@ NV_STATUS uvm_hal_init_table(void)
     status = ops_init_from_parent(fault_buffer_table,
                                   ARRAY_SIZE(fault_buffer_table),
                                   FAULT_BUFFER_OP_COUNT,
-                                  offsetof(uvm_hal_class_ops_t, u.fault_buffer_ops));
+                                  offsetof(uvm_hal_class_ops_t *, u.fault_buffer_ops));
     if (status != NV_OK) {
         UVM_ERR_PRINT("ops_init_from_parent(fault_buffer_table) failed: %s\n", nvstatusToString(status));
         return status;
@@ -705,7 +705,7 @@ NV_STATUS uvm_hal_init_table(void)
     status = ops_init_from_parent(access_counter_buffer_table,
                                   ARRAY_SIZE(access_counter_buffer_table),
                                   ACCESS_COUNTER_BUFFER_OP_COUNT,
-                                  offsetof(uvm_hal_class_ops_t, u.access_counter_buffer_ops));
+                                  offsetof(uvm_hal_class_ops_t *, u.access_counter_buffer_ops));
     if (status != NV_OK) {
         UVM_ERR_PRINT("ops_init_from_parent(access_counter_buffer_table) failed: %s\n", nvstatusToString(status));
         return status;

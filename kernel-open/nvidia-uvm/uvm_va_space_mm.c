@@ -281,15 +281,11 @@ NV_STATUS uvm_va_space_mm_register(uvm_va_space_t *va_space)
     uvm_va_space_mm_t *va_space_mm = &va_space->va_space_mm;
     int ret;
 
-    uvm_assert_mmap_lock_locked_write(current->mm);
     uvm_assert_rwsem_locked_write(&va_space->lock);
 
     UVM_ASSERT(uvm_va_space_initialized(va_space) != NV_OK);
     if (!uvm_va_space_mm_enabled(va_space))
         return NV_OK;
-
-    UVM_ASSERT(!va_space_mm->mm);
-    va_space_mm->mm = current->mm;
 
     // We must be prepared to handle callbacks as soon as we make this call,
     // except for ->release() which can't be called since the mm belongs to
@@ -297,7 +293,6 @@ NV_STATUS uvm_va_space_mm_register(uvm_va_space_t *va_space)
     ret = uvm_mmu_notifier_register(va_space_mm);
     if (ret) {
         // Inform uvm_va_space_mm_unregister() that it has nothing to do.
-        va_space_mm->mm = NULL;
         return errno_to_nv_status(ret);
     }
 
@@ -319,9 +314,6 @@ void uvm_va_space_mm_unregister(uvm_va_space_t *va_space)
     uvm_assert_unlocked_order(UVM_LOCK_ORDER_MMAP_LOCK);
     uvm_assert_unlocked_order(UVM_LOCK_ORDER_VA_SPACE);
 
-    if (!va_space_mm->mm)
-        return;
-
     UVM_ASSERT(uvm_va_space_mm_enabled(va_space));
     uvm_mmu_notifier_unregister(va_space_mm);
 
@@ -330,86 +322,6 @@ void uvm_va_space_mm_unregister(uvm_va_space_t *va_space)
     // this thread). Therefore all retainers have been flushed.
     UVM_ASSERT(!va_space_mm->alive);
     UVM_ASSERT(va_space_mm->retained_count == 0);
-    va_space_mm->mm = NULL;
-}
-
-struct mm_struct *uvm_va_space_mm_retain(uvm_va_space_t *va_space)
-{
-    uvm_va_space_mm_t *va_space_mm = &va_space->va_space_mm;
-    struct mm_struct *mm = NULL;
-
-    UVM_ASSERT(uvm_va_space_initialized(va_space) == NV_OK);
-
-    if (!uvm_va_space_mm_enabled(va_space))
-        return NULL;
-
-    uvm_spin_lock(&va_space_mm->lock);
-
-    if (va_space_mm->alive) {
-        ++va_space_mm->retained_count;
-        mm = va_space_mm->mm;
-        UVM_ASSERT(mm);
-    }
-
-    uvm_spin_unlock(&va_space_mm->lock);
-
-    return mm;
-}
-
-struct mm_struct *uvm_va_space_mm_or_current_retain(uvm_va_space_t *va_space)
-{
-    uvm_va_space_mm_t *va_space_mm = &va_space->va_space_mm;
-
-    // We should only attempt to use current->mm from a user thread
-    UVM_ASSERT(!(current->flags & PF_KTHREAD));
-
-    UVM_ASSERT(uvm_va_space_initialized(va_space) == NV_OK);
-
-    // current->mm is NULL when we're in process teardown. In that case it
-    // doesn't make sense to use any mm.
-    if (!current->mm)
-        return NULL;
-
-    // If the va_space_mm matches current->mm then it would be safe but sub-
-    // optimal to call uvm_va_space_mm_retain(). current->mm is always valid to
-    // use when non-NULL so there is no need to retain it.
-    if (!uvm_va_space_mm_enabled(va_space) || va_space_mm->mm == current->mm)
-        return current->mm;
-
-    return uvm_va_space_mm_retain(va_space);
-}
-
-void uvm_va_space_mm_release(uvm_va_space_t *va_space)
-{
-    uvm_va_space_mm_t *va_space_mm = &va_space->va_space_mm;
-    bool do_wake = false;
-
-    UVM_ASSERT(uvm_va_space_mm_enabled(va_space));
-
-    // The mm must not have been torn down while we have it retained
-    UVM_ASSERT(va_space_mm->mm);
-
-    uvm_spin_lock(&va_space_mm->lock);
-
-    UVM_ASSERT(va_space_mm->retained_count > 0);
-    --va_space_mm->retained_count;
-
-    // If we're the last retainer on a dead mm, signal any potential waiters
-    if (va_space_mm->retained_count == 0 && !va_space_mm->alive)
-        do_wake = true;
-
-    uvm_spin_unlock(&va_space_mm->lock);
-
-    // There could be multiple threads in uvm_va_space_mm_shutdown() waiting on
-    // us, so we have to wake up all waiters.
-    if (do_wake)
-        wake_up_all(&va_space_mm->last_retainer_wait_queue);
-}
-
-void uvm_va_space_mm_or_current_release(uvm_va_space_t *va_space, struct mm_struct *mm)
-{
-    if (mm && mm != current->mm)
-        uvm_va_space_mm_release(va_space);
 }
 
 static void uvm_va_space_mm_shutdown_delay(uvm_va_space_t *va_space)
@@ -417,7 +329,6 @@ static void uvm_va_space_mm_shutdown_delay(uvm_va_space_t *va_space)
     uvm_va_space_mm_t *va_space_mm = &va_space->va_space_mm;
     NvU64 start_time;
     int num_threads;
-    bool timed_out = false;
 
     if (!va_space_mm->test.delay_shutdown)
         return;
@@ -431,13 +342,9 @@ static void uvm_va_space_mm_shutdown_delay(uvm_va_space_t *va_space)
         // Wait for another thread to arrive unless we time out
         while (atomic_read(&va_space_mm->test.num_mm_shutdown_threads) == 1) {
             if (NV_GETTIME() - start_time >= 1000*1000*UVM_VA_SPACE_MM_SHUTDOWN_DELAY_MAX_MS) {
-                timed_out = true;
                 break;
             }
         }
-
-        if (va_space_mm->test.verbose)
-            UVM_TEST_PRINT("Multiple threads: %d\n", !timed_out);
     }
 
     // No need to decrement num_mm_shutdown_threads since this va_space_mm is
@@ -478,7 +385,6 @@ static void uvm_va_space_mm_shutdown(uvm_va_space_t *va_space)
     // The mm must not have been torn down completely yet, but it may have been
     // marked as dead by a concurrent thread.
     UVM_ASSERT(uvm_va_space_mm_enabled(va_space));
-    UVM_ASSERT(va_space_mm->mm);
 
     // Inject a delay for testing if requested
     uvm_va_space_mm_shutdown_delay(va_space);
@@ -567,8 +473,6 @@ static void uvm_va_space_mm_shutdown(uvm_va_space_t *va_space)
     //
     // We can be sure that num_pending will eventually go to zero because we've
     // prevented new GPU VA spaces from being registered above.
-    wait_event(va_space->gpu_va_space_deferred_free.wait_queue,
-               atomic_read(&va_space->gpu_va_space_deferred_free.num_pending) == 0);
 
     // Now that there won't be any new GPU faults, prevent subsequent retainers
     // from accessing this mm.
@@ -581,88 +485,4 @@ static void uvm_va_space_mm_shutdown(uvm_va_space_t *va_space)
     uvm_deferred_free_object_list(&deferred_free_list);
 
     // Flush out all pending retainers
-    wait_event(va_space_mm->last_retainer_wait_queue, va_space_mm->retained_count == 0);
-}
-
-static NV_STATUS mm_read64(struct mm_struct *mm, NvU64 addr, NvU64 *val)
-{
-    long ret;
-    int write = 0, force = 0;
-    struct page *page;
-    NvU64 *mapping;
-
-    UVM_ASSERT(IS_ALIGNED(addr, sizeof(*val)));
-
-    uvm_down_read_mmap_lock(mm);
-    ret = NV_GET_USER_PAGES_REMOTE(NULL, mm, (unsigned long)addr, 1, write, force, &page, NULL);
-    uvm_up_read_mmap_lock(mm);
-
-    if (ret < 0)
-        return errno_to_nv_status(ret);
-
-    UVM_ASSERT(ret == 1);
-
-    mapping = (NvU64 *)((char *)kmap(page) + (addr % PAGE_SIZE));
-    *val = *mapping;
-    kunmap(page);
-    put_page(page);
-
-    return NV_OK;
-}
-
-NV_STATUS uvm_test_va_space_mm_retain(UVM_TEST_VA_SPACE_MM_RETAIN_PARAMS *params, struct file *filp)
-{
-    uvm_va_space_t *va_space = NULL;
-    struct mm_struct *mm = NULL;
-    NV_STATUS status = NV_OK;
-
-    if (!IS_ALIGNED(params->addr, sizeof(params->val_before)))
-        return NV_ERR_INVALID_ARGUMENT;
-
-    uvm_mutex_lock(&g_uvm_global.va_spaces.lock);
-
-    list_for_each_entry(va_space, &g_uvm_global.va_spaces.list, list_node) {
-        if ((uintptr_t)va_space == params->va_space_ptr && uvm_va_space_initialized(va_space) == NV_OK) {
-            mm = uvm_va_space_mm_retain(va_space);
-            break;
-        }
-    }
-
-    uvm_mutex_unlock(&g_uvm_global.va_spaces.lock);
-
-    if ((uintptr_t)va_space != params->va_space_ptr)
-        return NV_ERR_MISSING_TABLE_ENTRY;
-
-    if (!mm)
-        return NV_ERR_PAGE_TABLE_NOT_AVAIL;
-
-    status = mm_read64(mm, params->addr, &params->val_before);
-
-    if (status == NV_OK && params->sleep_us) {
-        usleep_range(params->sleep_us, params->sleep_us + 1000);
-        status = mm_read64(mm, params->addr, &params->val_after);
-    }
-
-    uvm_va_space_mm_release(va_space);
-    return status;
-}
-
-NV_STATUS uvm_test_va_space_mm_delay_shutdown(UVM_TEST_VA_SPACE_MM_DELAY_SHUTDOWN_PARAMS *params, struct file *filp)
-{
-    uvm_va_space_t *va_space = uvm_va_space_get(filp);
-    uvm_va_space_mm_t *va_space_mm = &va_space->va_space_mm;
-    NV_STATUS status = NV_ERR_PAGE_TABLE_NOT_AVAIL;
-
-    uvm_va_space_down_write(va_space);
-
-    if (uvm_va_space_mm_retain(va_space)) {
-        va_space_mm->test.delay_shutdown = true;
-        va_space_mm->test.verbose = params->verbose;
-        uvm_va_space_mm_release(va_space);
-        status = NV_OK;
-    }
-
-    uvm_va_space_up_write(va_space);
-
-    return status;
 }

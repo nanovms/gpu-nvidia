@@ -53,27 +53,27 @@ typedef struct
 {
     uvm_spinlock_t lock;
     NvU64 subscribed_queues;
-    struct list_head queue_nodes[UvmEventNumTypesAll];
+    struct list queue_nodes[UvmEventNumTypesAll];
 
-    struct page **queue_buffer_pages;
+    u64 *queue_buffer_pages;
     UvmEventEntry *queue;
     NvU32 queue_buffer_count;
     NvU32 notification_threshold;
 
-    struct page **control_buffer_pages;
+    u64 *control_buffer_pages;
     UvmToolsEventControlData *control;
 
-    wait_queue_head_t wait_queue;
+    blockq wait_queue;
     bool is_wakeup_get_valid;
     NvU32 wakeup_get;
 } uvm_tools_queue_t;
 
 typedef struct
 {
-    struct list_head counter_nodes[UVM_TOTAL_COUNTERS];
+    struct list counter_nodes[UVM_TOTAL_COUNTERS];
     NvU64 subscribed_counters;
 
-    struct page **counter_buffer_pages;
+    u64 *counter_buffer_pages;
     NvU64 *counters;
 
     bool all_processors;
@@ -84,7 +84,7 @@ typedef struct
 typedef struct
 {
     bool is_queue;
-    struct file *uvm_file;
+    uvm_fd uvm_file;
     union
     {
         uvm_tools_queue_t queue;
@@ -114,7 +114,7 @@ typedef struct
     uvm_va_space_t *va_space;
 
     uvm_channel_t *channel;
-    struct list_head events;
+    struct list events;
     NvU64 start_timestamp_cpu;
     NvU64 end_timestamp_cpu;
     NvU64 *start_timestamp_gpu_addr;
@@ -125,7 +125,7 @@ typedef struct
 // This object represents a specific pending migration within a VA block
 typedef struct
 {
-    struct list_head events_node;
+    struct list events_node;
     NvU64 bytes;
     NvU64 address;
     NvU64 *end_timestamp_gpu_addr;
@@ -157,13 +157,13 @@ typedef struct
     uvm_va_space_t *va_space;
 
     uvm_channel_t *channel;
-    struct list_head events;
+    struct list events;
 } block_map_remote_data_t;
 
 // This object represents a pending map remote operation
 typedef struct
 {
-    struct list_head events_node;
+    struct list events_node;
 
     NvU64 address;
     NvU64 size;
@@ -171,26 +171,35 @@ typedef struct
     NvU64 *timestamp_gpu_addr;
 } map_remote_data_t;
 
+declare_closure_struct(0, 2, sysreturn, uvm_tools_ioctl,
+                       unsigned long, request, vlist, ap);
+declare_closure_struct(0, 2, sysreturn, uvm_tools_close,
+                        thread, t, io_completion, completion);
+typedef struct {
+    file f;
+    uvm_tools_event_tracker_t *tracker;
+    closure_struct(uvm_tools_ioctl, ioctl);
+    closure_struct(uvm_tools_close, close);
+} *uvm_tools_fd;
 
-static struct cdev g_uvm_tools_cdev;
 static LIST_HEAD(g_tools_va_space_list);
 static NvU32 g_tools_enabled_event_count[UvmEventNumTypesAll];
 static uvm_rw_semaphore_t g_tools_va_space_list_lock;
-static struct kmem_cache *g_tools_event_tracker_cache __read_mostly = NULL;
-static struct kmem_cache *g_tools_block_migration_data_cache __read_mostly = NULL;
-static struct kmem_cache *g_tools_migration_data_cache __read_mostly = NULL;
-static struct kmem_cache *g_tools_replay_data_cache __read_mostly = NULL;
-static struct kmem_cache *g_tools_block_map_remote_data_cache __read_mostly = NULL;
-static struct kmem_cache *g_tools_map_remote_data_cache __read_mostly = NULL;
+static heap g_tools_event_tracker_cache __read_mostly = NULL;
+static heap g_tools_block_migration_data_cache __read_mostly = NULL;
+static heap g_tools_migration_data_cache __read_mostly = NULL;
+static heap g_tools_replay_data_cache __read_mostly = NULL;
+static heap g_tools_block_map_remote_data_cache __read_mostly = NULL;
+static heap g_tools_map_remote_data_cache __read_mostly = NULL;
 static uvm_spinlock_t g_tools_channel_list_lock;
 static LIST_HEAD(g_tools_channel_list);
 static nv_kthread_q_t g_tools_queue;
 
 static NV_STATUS tools_update_status(uvm_va_space_t *va_space);
 
-static uvm_tools_event_tracker_t *tools_event_tracker(struct file *filp)
+static uvm_tools_event_tracker_t *tools_event_tracker(uvm_tools_fd filp)
 {
-    return (uvm_tools_event_tracker_t *)atomic_long_read((atomic_long_t *)&filp->private_data);
+    return (uvm_tools_event_tracker_t *)atomic_long_read(&filp->tracker);
 }
 
 static bool tracker_is_queue(uvm_tools_event_tracker_t *event_tracker)
@@ -212,7 +221,7 @@ static uvm_va_space_t *tools_event_tracker_va_space(uvm_tools_event_tracker_t *e
     return va_space;
 }
 
-static void uvm_put_user_pages_dirty(struct page **pages, NvU64 page_count)
+static void uvm_put_user_pages_dirty(u64 *pages, NvU64 page_count)
 {
     NvU64 i;
 
@@ -222,23 +231,23 @@ static void uvm_put_user_pages_dirty(struct page **pages, NvU64 page_count)
     }
 }
 
-static void unmap_user_pages(struct page **pages, void *addr, NvU64 size)
+static void unmap_user_pages(u64 *pages, void *addr, NvU64 size)
 {
     size = DIV_ROUND_UP(size, PAGE_SIZE);
-    vunmap((NvU8 *)addr);
+    unmap(u64_from_pointer(addr), size);
     uvm_put_user_pages_dirty(pages, size);
     uvm_kvfree(pages);
 }
 
 // Map virtual memory of data from [user_va, user_va + size) of current process into kernel.
 // Sets *addr to kernel mapping and *pages to the array of struct pages that contain the memory.
-static NV_STATUS map_user_pages(NvU64 user_va, NvU64 size, void **addr, struct page ***pages)
+static NV_STATUS map_user_pages(NvU64 user_va, NvU64 size, void **addr, u64 **pages)
 {
     NV_STATUS status = NV_OK;
     long ret = 0;
     long num_pages;
     long i;
-    struct vm_area_struct **vmas = NULL;
+    pageflags prot = pageflags_writable(pageflags_memory());
 
     *addr = NULL;
     *pages = NULL;
@@ -255,39 +264,26 @@ static NV_STATUS map_user_pages(NvU64 user_va, NvU64 size, void **addr, struct p
         goto fail;
     }
 
-    vmas = uvm_kvmalloc(sizeof(struct vm_area_struct *) * num_pages);
-    if (vmas == NULL) {
-        status = NV_ERR_NO_MEMORY;
-        goto fail;
-    }
-
-    nv_mmap_read_lock(current->mm);
-    ret = NV_GET_USER_PAGES(user_va, num_pages, 1, 0, *pages, vmas);
-    nv_mmap_read_unlock(current->mm);
+    ret = NV_GET_USER_PAGES(user_va, num_pages, 1, 0, *pages, NULL);
     if (ret != num_pages) {
         status = NV_ERR_INVALID_ARGUMENT;
         goto fail;
     }
 
-    for (i = 0; i < num_pages; i++) {
-        if (page_count((*pages)[i]) > MAX_PAGE_COUNT || uvm_file_is_nvidia_uvm(vmas[i]->vm_file)) {
-            status = NV_ERR_INVALID_ARGUMENT;
-            goto fail;
-        }
-    }
-
-    *addr = vmap(*pages, num_pages, VM_MAP, PAGE_KERNEL);
+    *addr = allocate((heap)heap_virtual_page(get_kernel_heaps()), num_pages * PAGESIZE);
+    if (*addr != INVALID_ADDRESS)
+        for (i = 0; i < num_pages; i++)
+            map(u64_from_pointer(*addr) + i * PAGESIZE, (*pages)[i], PAGESIZE, prot);
+    else
+        *addr = 0;
     if (*addr == NULL)
         goto fail;
 
-    uvm_kvfree(vmas);
     return NV_OK;
 
 fail:
     if (*pages == NULL)
         return status;
-
-    uvm_kvfree(vmas);
 
     if (ret > 0)
         uvm_put_user_pages_dirty(*pages, ret);
@@ -300,11 +296,11 @@ fail:
 }
 
 static void insert_event_tracker(uvm_va_space_t *va_space,
-                                 struct list_head *node,
+                                 struct list *node,
                                  NvU32 list_count,
                                  NvU64 list_mask,
                                  NvU64 *subscribed_mask,
-                                 struct list_head *lists,
+                                 struct list *lists,
                                  NvU64 *inserted_lists)
 {
     NvU32 i;
@@ -325,7 +321,7 @@ static void insert_event_tracker(uvm_va_space_t *va_space,
 }
 
 static void remove_event_tracker(uvm_va_space_t *va_space,
-                                 struct list_head *node,
+                                 struct list *node,
                                  NvU32 list_count,
                                  NvU64 list_mask,
                                  NvU64 *subscribed_mask)
@@ -385,6 +381,7 @@ static void destroy_event_tracker(uvm_tools_event_tracker_t *event_tracker)
                                  queue->control,
                                  sizeof(UvmToolsEventControlData));
             }
+            deallocate_blockq(queue->wait_queue);
         }
         else {
             uvm_tools_counter_t *counters = &event_tracker->counter;
@@ -410,7 +407,7 @@ static void destroy_event_tracker(uvm_tools_event_tracker_t *event_tracker)
         uvm_up_write(&va_space->perf_events.lock);
         uvm_up_write(&g_tools_va_space_list_lock);
 
-        fput(event_tracker->uvm_file);
+        fdesc_put(&event_tracker->uvm_file->f->f);
     }
     kmem_cache_free(g_tools_event_tracker_cache, event_tracker);
 }
@@ -457,7 +454,7 @@ static void enqueue_event(const UvmEventEntry *entry, uvm_tools_queue_t *queue)
     if (queue_needs_wakeup(queue, &sn) && !(queue->is_wakeup_get_valid && queue->wakeup_get == sn.get_ahead)) {
         queue->is_wakeup_get_valid = true;
         queue->wakeup_get = sn.get_ahead;
-        wake_up_all(&queue->wait_queue);
+        blockq_flush(queue->wait_queue);
     }
 
 unlock:
@@ -588,86 +585,45 @@ static bool tools_is_migration_callback_needed(uvm_va_space_t *va_space)
            tools_is_counter_enabled(va_space, UvmCounterNameBytesXferHtD);
 }
 
-static int uvm_tools_open(struct inode *inode, struct file *filp)
+define_closure_function(0, 2, sysreturn, uvm_tools_close,
+                        thread, t, io_completion, completion)
 {
-    filp->private_data = NULL;
-    return -nv_status_to_errno(uvm_global_get_status());
-}
-
-static int uvm_tools_open_entry(struct inode *inode, struct file *filp)
-{
-    UVM_ENTRY_RET(uvm_tools_open(inode, filp));
-}
-
-static int uvm_tools_release(struct inode *inode, struct file *filp)
-{
+    uvm_tools_fd filp = struct_from_field(closure_self(), uvm_tools_fd, close);
     uvm_tools_event_tracker_t *event_tracker = tools_event_tracker(filp);
+
     if (event_tracker != NULL) {
         destroy_event_tracker(event_tracker);
-        filp->private_data = NULL;
     }
-    return -nv_status_to_errno(uvm_global_get_status());
+    NV_KFREE(filp, sizeof(*filp));
+    return io_complete(completion, t, -nv_status_to_errno(uvm_global_get_status()));
 }
 
-static int uvm_tools_release_entry(struct inode *inode, struct file *filp)
+define_closure_function(0, 2, sysreturn, uvm_tools_ioctl,
+                 unsigned long, cmd, vlist, ap)
 {
-    UVM_ENTRY_RET(uvm_tools_release(inode, filp));
-}
-
-static long uvm_tools_unlocked_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
-{
-    switch (cmd) {
-        UVM_ROUTE_CMD_STACK_NO_INIT_CHECK(UVM_TOOLS_INIT_EVENT_TRACKER,         uvm_api_tools_init_event_tracker);
-        UVM_ROUTE_CMD_STACK_NO_INIT_CHECK(UVM_TOOLS_SET_NOTIFICATION_THRESHOLD, uvm_api_tools_set_notification_threshold);
-        UVM_ROUTE_CMD_STACK_NO_INIT_CHECK(UVM_TOOLS_EVENT_QUEUE_ENABLE_EVENTS,  uvm_api_tools_event_queue_enable_events);
-        UVM_ROUTE_CMD_STACK_NO_INIT_CHECK(UVM_TOOLS_EVENT_QUEUE_DISABLE_EVENTS, uvm_api_tools_event_queue_disable_events);
-        UVM_ROUTE_CMD_STACK_NO_INIT_CHECK(UVM_TOOLS_ENABLE_COUNTERS,            uvm_api_tools_enable_counters);
-        UVM_ROUTE_CMD_STACK_NO_INIT_CHECK(UVM_TOOLS_DISABLE_COUNTERS,           uvm_api_tools_disable_counters);
-    }
+    uvm_tools_fd filp = struct_from_field(closure_self(), uvm_tools_fd, ioctl);
 
     uvm_thread_assert_all_unlocked();
 
-    return -EINVAL;
+    return ioctl_generic(&filp->f->f, cmd, ap);
 }
 
-static long uvm_tools_unlocked_ioctl_entry(struct file *filp, unsigned int cmd, unsigned long arg)
+closure_function(0, 1, sysreturn, uvm_tools_open,
+                 file, f)
 {
-    UVM_ENTRY_RET(uvm_tools_unlocked_ioctl(filp, cmd, arg));
-}
+    uvm_tools_fd fd;
+    NV_STATUS status = uvm_global_get_status();
 
-static unsigned uvm_tools_poll(struct file *filp, poll_table *wait)
-{
-    int flags = 0;
-    uvm_tools_queue_snapshot_t sn;
-    uvm_tools_event_tracker_t *event_tracker;
-    UvmToolsEventControlData *ctrl;
-
-    if (uvm_global_get_status() != NV_OK)
-        return POLLERR;
-
-    event_tracker = tools_event_tracker(filp);
-    if (!tracker_is_queue(event_tracker))
-        return POLLERR;
-
-    uvm_spin_lock(&event_tracker->queue.lock);
-
-    event_tracker->queue.is_wakeup_get_valid = false;
-    ctrl = event_tracker->queue.control;
-    sn.get_ahead = atomic_read((atomic_t *)&ctrl->get_ahead);
-    sn.put_behind = atomic_read((atomic_t *)&ctrl->put_behind);
-
-    if (queue_needs_wakeup(&event_tracker->queue, &sn))
-        flags = POLLIN | POLLRDNORM;
-
-    uvm_spin_unlock(&event_tracker->queue.lock);
-
-    poll_wait(filp, &event_tracker->queue.wait_queue, wait);
-    return flags;
-}
-
-static unsigned uvm_tools_poll_entry(struct file *filp, poll_table *wait)
-{
-    UVM_ENTRY_RET(uvm_tools_poll(filp, wait));
+    if (status != NV_OK)
+        return -nv_status_to_errno(status);
+    NV_KMALLOC(fd, sizeof(*fd));
+    if (!fd)
+        return -ENOMEM;
+    f->f.ioctl = init_closure(&fd->ioctl, uvm_tools_ioctl);
+    f->f.close = init_closure(&fd->close, uvm_tools_close);
+    fd->tracker = 0;
+    fd->f = f;
+    return 0;
 }
 
 static UvmEventFaultType g_hal_to_tools_fault_type_table[UVM_FAULT_TYPE_COUNT] = {
@@ -1579,119 +1535,6 @@ done:
     uvm_up_read(&va_space->tools.lock);
 }
 
-NV_STATUS uvm_api_tools_init_event_tracker(UVM_TOOLS_INIT_EVENT_TRACKER_PARAMS *params, struct file *filp)
-{
-    NV_STATUS status = NV_OK;
-    uvm_tools_event_tracker_t *event_tracker;
-
-    event_tracker = nv_kmem_cache_zalloc(g_tools_event_tracker_cache, NV_UVM_GFP_FLAGS);
-    if (event_tracker == NULL)
-        return NV_ERR_NO_MEMORY;
-
-    event_tracker->uvm_file = fget(params->uvmFd);
-    if (event_tracker->uvm_file == NULL) {
-        status = NV_ERR_INSUFFICIENT_PERMISSIONS;
-        goto fail;
-    }
-
-    if (!uvm_file_is_nvidia_uvm(event_tracker->uvm_file)) {
-        fput(event_tracker->uvm_file);
-        event_tracker->uvm_file = NULL;
-        status = NV_ERR_INSUFFICIENT_PERMISSIONS;
-        goto fail;
-    }
-
-    status = uvm_va_space_initialized(uvm_va_space_get(event_tracker->uvm_file));
-    if (status != NV_OK) {
-        fput(event_tracker->uvm_file);
-        event_tracker->uvm_file = NULL;
-        goto fail;
-    }
-
-    event_tracker->is_queue = params->queueBufferSize != 0;
-    if (event_tracker->is_queue) {
-        uvm_tools_queue_t *queue = &event_tracker->queue;
-        uvm_spin_lock_init(&queue->lock, UVM_LOCK_ORDER_LEAF);
-        init_waitqueue_head(&queue->wait_queue);
-
-        if (params->queueBufferSize > UINT_MAX) {
-            status = NV_ERR_INVALID_ARGUMENT;
-            goto fail;
-        }
-
-        queue->queue_buffer_count = (NvU32)params->queueBufferSize;
-        queue->notification_threshold = queue->queue_buffer_count / 2;
-
-        // queue_buffer_count must be a power of 2, of at least 2
-        if (!is_power_of_2(queue->queue_buffer_count) || queue->queue_buffer_count < 2) {
-            status = NV_ERR_INVALID_ARGUMENT;
-            goto fail;
-        }
-
-        status = map_user_pages(params->queueBuffer,
-                                queue->queue_buffer_count * sizeof(UvmEventEntry),
-                                (void **)&queue->queue,
-                                &queue->queue_buffer_pages);
-        if (status != NV_OK)
-            goto fail;
-
-        status = map_user_pages(params->controlBuffer,
-                                sizeof(UvmToolsEventControlData),
-                                (void **)&queue->control,
-                                &queue->control_buffer_pages);
-
-        if (status != NV_OK)
-            goto fail;
-    }
-    else {
-        uvm_tools_counter_t *counter = &event_tracker->counter;
-        counter->all_processors = params->allProcessors;
-        counter->processor = params->processor;
-        status = map_user_pages(params->controlBuffer,
-                                sizeof(NvU64) * UVM_TOTAL_COUNTERS,
-                                (void **)&counter->counters,
-                                &counter->counter_buffer_pages);
-        if (status != NV_OK)
-            goto fail;
-    }
-
-    if (nv_atomic_long_cmpxchg((atomic_long_t *)&filp->private_data, 0, (long)event_tracker) != 0) {
-        status = NV_ERR_INVALID_ARGUMENT;
-        goto fail;
-    }
-
-    return NV_OK;
-
-fail:
-    destroy_event_tracker(event_tracker);
-    return status;
-}
-
-NV_STATUS uvm_api_tools_set_notification_threshold(UVM_TOOLS_SET_NOTIFICATION_THRESHOLD_PARAMS *params, struct file *filp)
-{
-    UvmToolsEventControlData *ctrl;
-    uvm_tools_queue_snapshot_t sn;
-    uvm_tools_event_tracker_t *event_tracker = tools_event_tracker(filp);
-
-    if (!tracker_is_queue(event_tracker))
-        return NV_ERR_INVALID_ARGUMENT;
-
-    uvm_spin_lock(&event_tracker->queue.lock);
-
-    event_tracker->queue.notification_threshold = params->notificationThreshold;
-
-    ctrl = event_tracker->queue.control;
-    sn.put_behind = atomic_read((atomic_t *)&ctrl->put_behind);
-    sn.get_ahead = atomic_read((atomic_t *)&ctrl->get_ahead);
-
-    if (queue_needs_wakeup(&event_tracker->queue, &sn))
-        wake_up_all(&event_tracker->queue.wait_queue);
-
-    uvm_spin_unlock(&event_tracker->queue.lock);
-
-    return NV_OK;
-}
-
 static NV_STATUS tools_update_perf_events_callbacks(uvm_va_space_t *va_space)
 {
     NV_STATUS status;
@@ -1803,153 +1646,6 @@ static bool mask_contains_invalid_events(NvU64 event_flags)
     return true;
 }
 
-NV_STATUS uvm_api_tools_event_queue_enable_events(UVM_TOOLS_EVENT_QUEUE_ENABLE_EVENTS_PARAMS *params, struct file *filp)
-{
-    uvm_va_space_t *va_space;
-    uvm_tools_event_tracker_t *event_tracker = tools_event_tracker(filp);
-    NV_STATUS status = NV_OK;
-    NvU64 inserted_lists;
-
-    if (!tracker_is_queue(event_tracker))
-        return NV_ERR_INVALID_ARGUMENT;
-
-    if (mask_contains_invalid_events(params->eventTypeFlags))
-        return NV_ERR_INVALID_ARGUMENT;
-
-    va_space = tools_event_tracker_va_space(event_tracker);
-
-    uvm_down_write(&g_tools_va_space_list_lock);
-    uvm_down_write(&va_space->perf_events.lock);
-    uvm_down_write(&va_space->tools.lock);
-
-    insert_event_tracker(va_space,
-                         event_tracker->queue.queue_nodes,
-                         UvmEventNumTypesAll,
-                         params->eventTypeFlags,
-                         &event_tracker->queue.subscribed_queues,
-                         va_space->tools.queues,
-                         &inserted_lists);
-
-    // perform any necessary registration
-    status = tools_update_status(va_space);
-    if (status != NV_OK) {
-        // on error, unregister any newly registered event
-        remove_event_tracker(va_space,
-                             event_tracker->queue.queue_nodes,
-                             UvmEventNumTypes,
-                             inserted_lists,
-                             &event_tracker->queue.subscribed_queues);
-    }
-
-    uvm_up_write(&va_space->tools.lock);
-    uvm_up_write(&va_space->perf_events.lock);
-    uvm_up_write(&g_tools_va_space_list_lock);
-
-    return status;
-}
-
-NV_STATUS uvm_api_tools_event_queue_disable_events(UVM_TOOLS_EVENT_QUEUE_DISABLE_EVENTS_PARAMS *params, struct file *filp)
-{
-    NV_STATUS status;
-    uvm_va_space_t *va_space;
-    uvm_tools_event_tracker_t *event_tracker = tools_event_tracker(filp);
-
-    if (!tracker_is_queue(event_tracker))
-        return NV_ERR_INVALID_ARGUMENT;
-
-    va_space = tools_event_tracker_va_space(event_tracker);
-
-    uvm_down_write(&g_tools_va_space_list_lock);
-    uvm_down_write(&va_space->perf_events.lock);
-    uvm_down_write(&va_space->tools.lock);
-    remove_event_tracker(va_space,
-                         event_tracker->queue.queue_nodes,
-                         UvmEventNumTypesAll,
-                         params->eventTypeFlags,
-                         &event_tracker->queue.subscribed_queues);
-
-    // de-registration should not fail
-    status = tools_update_status(va_space);
-    UVM_ASSERT(status == NV_OK);
-
-    uvm_up_write(&va_space->tools.lock);
-    uvm_up_write(&va_space->perf_events.lock);
-    uvm_up_write(&g_tools_va_space_list_lock);
-    return NV_OK;
-}
-
-NV_STATUS uvm_api_tools_enable_counters(UVM_TOOLS_ENABLE_COUNTERS_PARAMS *params, struct file *filp)
-{
-    uvm_va_space_t *va_space;
-    uvm_tools_event_tracker_t *event_tracker = tools_event_tracker(filp);
-    NV_STATUS status = NV_OK;
-    NvU64 inserted_lists;
-
-    if (!tracker_is_counter(event_tracker))
-        return NV_ERR_INVALID_ARGUMENT;
-
-    va_space = tools_event_tracker_va_space(event_tracker);
-
-    uvm_down_write(&g_tools_va_space_list_lock);
-    uvm_down_write(&va_space->perf_events.lock);
-    uvm_down_write(&va_space->tools.lock);
-
-    insert_event_tracker(va_space,
-                         event_tracker->counter.counter_nodes,
-                         UVM_TOTAL_COUNTERS,
-                         params->counterTypeFlags,
-                         &event_tracker->counter.subscribed_counters,
-                         va_space->tools.counters,
-                         &inserted_lists);
-
-    // perform any necessary registration
-    status = tools_update_status(va_space);
-    if (status != NV_OK) {
-        remove_event_tracker(va_space,
-                             event_tracker->counter.counter_nodes,
-                             UVM_TOTAL_COUNTERS,
-                             inserted_lists,
-                             &event_tracker->counter.subscribed_counters);
-    }
-
-    uvm_up_write(&va_space->tools.lock);
-    uvm_up_write(&va_space->perf_events.lock);
-    uvm_up_write(&g_tools_va_space_list_lock);
-
-    return status;
-}
-
-NV_STATUS uvm_api_tools_disable_counters(UVM_TOOLS_DISABLE_COUNTERS_PARAMS *params, struct file *filp)
-{
-    NV_STATUS status;
-    uvm_va_space_t *va_space;
-    uvm_tools_event_tracker_t *event_tracker = tools_event_tracker(filp);
-
-    if (!tracker_is_counter(event_tracker))
-        return NV_ERR_INVALID_ARGUMENT;
-
-    va_space = tools_event_tracker_va_space(event_tracker);
-
-    uvm_down_write(&g_tools_va_space_list_lock);
-    uvm_down_write(&va_space->perf_events.lock);
-    uvm_down_write(&va_space->tools.lock);
-    remove_event_tracker(va_space,
-                         event_tracker->counter.counter_nodes,
-                         UVM_TOTAL_COUNTERS,
-                         params->counterTypeFlags,
-                         &event_tracker->counter.subscribed_counters);
-
-    // de-registration should not fail
-    status = tools_update_status(va_space);
-    UVM_ASSERT(status == NV_OK);
-
-    uvm_up_write(&va_space->tools.lock);
-    uvm_up_write(&va_space->perf_events.lock);
-    uvm_up_write(&g_tools_va_space_list_lock);
-
-    return NV_OK;
-}
-
 static NV_STATUS tools_access_va_block(uvm_va_block_t *va_block,
                                        uvm_va_block_context_t *block_context,
                                        NvU64 target_va,
@@ -1983,7 +1679,6 @@ static NV_STATUS tools_access_process_memory(uvm_va_space_t *va_space,
     uvm_global_processor_mask_t *retained_global_gpus = NULL;
     uvm_global_processor_mask_t *global_gpus = NULL;
     uvm_va_block_context_t *block_context = NULL;
-    struct mm_struct *mm = NULL;
 
     retained_global_gpus = uvm_kvmalloc(sizeof(*retained_global_gpus));
     if (retained_global_gpus == NULL)
@@ -1997,14 +1692,12 @@ static NV_STATUS tools_access_process_memory(uvm_va_space_t *va_space,
         goto exit;
     }
 
-    mm = uvm_va_space_mm_or_current_retain(va_space);
-
-    status = uvm_mem_alloc_sysmem_and_map_cpu_kernel(PAGE_SIZE, mm, &stage_mem);
+    status = uvm_mem_alloc_sysmem_and_map_cpu_kernel(PAGE_SIZE, NULL, &stage_mem);
     if (status != NV_OK)
         goto exit;
 
     if (is_write) {
-        block_context = uvm_va_block_context_alloc(mm);
+        block_context = uvm_va_block_context_alloc(NULL);
         if (!block_context) {
             status = NV_ERR_NO_MEMORY;
             goto exit;
@@ -2024,11 +1717,7 @@ static NV_STATUS tools_access_process_memory(uvm_va_space_t *va_space,
         NvU64 bytes_now = min(bytes_left, (NvU64)(PAGE_SIZE - page_offset));
 
         if (is_write) {
-            NvU64 remaining = nv_copy_from_user(stage_addr, user_va_start, bytes_now);
-            if (remaining != 0)  {
-                status = NV_ERR_INVALID_ARGUMENT;
-                goto exit;
-            }
+            runtime_memcpy(stage_addr, user_va_start, bytes_now);
         }
 
         // The RM flavor of the lock is needed to perform ECC checks.
@@ -2073,8 +1762,6 @@ static NV_STATUS tools_access_process_memory(uvm_va_space_t *va_space,
             goto exit;
 
         if (!is_write) {
-            NvU64 remaining;
-
             // Prevent processor speculation prior to accessing user-mapped
             // memory to avoid leaking information from side-channel attacks.
             // Under speculation, a valid VA range which does not contain
@@ -2084,11 +1771,7 @@ static NV_STATUS tools_access_process_memory(uvm_va_space_t *va_space,
             // point where the data is copied out.
             nv_speculation_barrier();
 
-            remaining = nv_copy_to_user(user_va_start, stage_addr, bytes_now);
-            if (remaining > 0) {
-                status = NV_ERR_INVALID_ARGUMENT;
-                goto exit;
-            }
+            runtime_memcpy(user_va_start, stage_addr, bytes_now);
         }
 
         *bytes += bytes_now;
@@ -2101,16 +1784,13 @@ exit:
 
     uvm_global_mask_release(retained_global_gpus);
 
-    if (mm)
-        uvm_va_space_mm_or_current_release(va_space, mm);
-
     uvm_kvfree(global_gpus);
     uvm_kvfree(retained_global_gpus);
 
     return status;
 }
 
-NV_STATUS uvm_api_tools_read_process_memory(UVM_TOOLS_READ_PROCESS_MEMORY_PARAMS *params, struct file *filp)
+NV_STATUS uvm_api_tools_read_process_memory(UVM_TOOLS_READ_PROCESS_MEMORY_PARAMS *params, uvm_fd filp)
 {
     return tools_access_process_memory(uvm_va_space_get(filp),
                                        params->targetVa,
@@ -2120,7 +1800,7 @@ NV_STATUS uvm_api_tools_read_process_memory(UVM_TOOLS_READ_PROCESS_MEMORY_PARAMS
                                        false);
 }
 
-NV_STATUS uvm_api_tools_write_process_memory(UVM_TOOLS_WRITE_PROCESS_MEMORY_PARAMS *params, struct file *filp)
+NV_STATUS uvm_api_tools_write_process_memory(UVM_TOOLS_WRITE_PROCESS_MEMORY_PARAMS *params, uvm_fd filp)
 {
     return tools_access_process_memory(uvm_va_space_get(filp),
                                        params->targetVa,
@@ -2130,41 +1810,9 @@ NV_STATUS uvm_api_tools_write_process_memory(UVM_TOOLS_WRITE_PROCESS_MEMORY_PARA
                                        true);
 }
 
-NV_STATUS uvm_test_inject_tools_event(UVM_TEST_INJECT_TOOLS_EVENT_PARAMS *params, struct file *filp)
-{
-    NvU32 i;
-    uvm_va_space_t *va_space = uvm_va_space_get(filp);
-
-    if (params->entry.eventData.eventType >= UvmEventNumTypesAll)
-        return NV_ERR_INVALID_ARGUMENT;
-
-    uvm_down_read(&va_space->tools.lock);
-    for (i = 0; i < params->count; i++)
-        uvm_tools_record_event(va_space, &params->entry);
-    uvm_up_read(&va_space->tools.lock);
-    return NV_OK;
-}
-
-NV_STATUS uvm_test_increment_tools_counter(UVM_TEST_INCREMENT_TOOLS_COUNTER_PARAMS *params, struct file *filp)
-{
-    NvU32 i;
-    uvm_va_space_t *va_space = uvm_va_space_get(filp);
-
-    if (params->counter >= UVM_TOTAL_COUNTERS)
-        return NV_ERR_INVALID_ARGUMENT;
-
-    uvm_down_read(&va_space->tools.lock);
-    for (i = 0; i < params->count; i++)
-        uvm_tools_inc_counter(va_space, params->counter, params->amount, &params->processor);
-    uvm_up_read(&va_space->tools.lock);
-
-    return NV_OK;
-}
-
-NV_STATUS uvm_api_tools_get_processor_uuid_table(UVM_TOOLS_GET_PROCESSOR_UUID_TABLE_PARAMS *params, struct file *filp)
+NV_STATUS uvm_api_tools_get_processor_uuid_table(UVM_TOOLS_GET_PROCESSOR_UUID_TABLE_PARAMS *params, uvm_fd filp)
 {
     NvProcessorUuid *uuids;
-    NvU64 remaining;
     uvm_gpu_t *gpu;
     uvm_va_space_t *va_space = uvm_va_space_get(filp);
 
@@ -2183,11 +1831,8 @@ NV_STATUS uvm_api_tools_get_processor_uuid_table(UVM_TOOLS_GET_PROCESSOR_UUID_TA
     }
     uvm_va_space_up_read(va_space);
 
-    remaining = nv_copy_to_user((void *)params->tablePtr, uuids, sizeof(NvProcessorUuid) * params->count);
+    runtime_memcpy((void *)params->tablePtr, uuids, sizeof(NvProcessorUuid) * params->count);
     uvm_kvfree(uuids);
-
-    if (remaining != 0)
-        return NV_ERR_INVALID_ADDRESS;
 
     return NV_OK;
 }
@@ -2199,50 +1844,11 @@ void uvm_tools_flush_events()
     nv_kthread_q_flush(&g_tools_queue);
 }
 
-NV_STATUS uvm_api_tools_flush_events(UVM_TOOLS_FLUSH_EVENTS_PARAMS *params, struct file *filp)
+NV_STATUS uvm_api_tools_flush_events(UVM_TOOLS_FLUSH_EVENTS_PARAMS *params, uvm_fd filp)
 {
     uvm_tools_flush_events();
     return NV_OK;
 }
-
-NV_STATUS uvm_test_tools_flush_replay_events(UVM_TEST_TOOLS_FLUSH_REPLAY_EVENTS_PARAMS *params, struct file *filp)
-{
-    NV_STATUS status = NV_OK;
-    uvm_gpu_t *gpu = NULL;
-    uvm_va_space_t *va_space = uvm_va_space_get(filp);
-
-    gpu = uvm_va_space_retain_gpu_by_uuid(va_space, &params->gpuUuid);
-    if (!gpu)
-        return NV_ERR_INVALID_DEVICE;
-
-    // Wait for register-based fault clears to queue the replay event
-    if (!gpu->parent->has_clear_faulted_channel_method) {
-        uvm_gpu_non_replayable_faults_isr_lock(gpu->parent);
-        uvm_gpu_non_replayable_faults_isr_unlock(gpu->parent);
-    }
-
-    // Wait for pending fault replay methods to complete (replayable faults on
-    // all GPUs, and non-replayable faults on method-based GPUs).
-    status = uvm_channel_manager_wait(gpu->channel_manager);
-
-    // Flush any pending events even if (status != NV_OK)
-    uvm_tools_flush_events();
-    uvm_gpu_release(gpu);
-
-    return status;
-}
-
-static const struct file_operations uvm_tools_fops =
-{
-    .open            = uvm_tools_open_entry,
-    .release         = uvm_tools_release_entry,
-    .unlocked_ioctl  = uvm_tools_unlocked_ioctl_entry,
-#if NVCPU_IS_X86_64
-    .compat_ioctl    = uvm_tools_unlocked_ioctl_entry,
-#endif
-    .poll            = uvm_tools_poll_entry,
-    .owner           = THIS_MODULE,
-};
 
 static void _uvm_tools_destroy_cache_all(void)
 {
@@ -2260,6 +1866,7 @@ int uvm_tools_init(dev_t uvm_base_dev)
 {
     dev_t uvm_tools_dev = MKDEV(MAJOR(uvm_base_dev), NVIDIA_UVM_TOOLS_MINOR_NUMBER);
     int ret = -ENOMEM; // This will be updated later if allocations succeed
+    spec_file_open open;
 
     uvm_init_rwsem(&g_tools_va_space_list_lock, UVM_LOCK_ORDER_TOOLS_VA_SPACE_LIST);
 
@@ -2299,9 +1906,9 @@ int uvm_tools_init(dev_t uvm_base_dev)
     if (ret < 0)
         goto err_cache_destroy;
 
-    uvm_init_character_device(&g_uvm_tools_cdev, &uvm_tools_fops);
-    ret = cdev_add(&g_uvm_tools_cdev, uvm_tools_dev, 1);
-    if (ret != 0) {
+    open = closure(heap_locked(get_kernel_heaps()), uvm_tools_open);
+    assert(open != INVALID_ADDRESS);
+    if (!create_special_file("/dev/nvidia-uvm-tools", open, 0, MAJOR(uvm_tools_dev))) {
         UVM_ERR_PRINT("cdev_add (major %u, minor %u) failed: %d\n", MAJOR(uvm_tools_dev),
                       MINOR(uvm_tools_dev), ret);
         goto err_stop_thread;
@@ -2320,7 +1927,6 @@ err_cache_destroy:
 void uvm_tools_exit(void)
 {
     unsigned i;
-    cdev_del(&g_uvm_tools_cdev);
 
     nv_kthread_q_stop(&g_tools_queue);
 

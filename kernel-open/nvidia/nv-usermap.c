@@ -24,7 +24,7 @@
 #define  __NO_VERSION__
 
 #include "os-interface.h"
-#include "nv-linux.h"
+#include "nv-nanos.h"
 #include "nv-frontend.h"
 
 NV_STATUS NV_API_CALL nv_add_mapping_context_to_file(
@@ -39,8 +39,7 @@ NV_STATUS NV_API_CALL nv_add_mapping_context_to_file(
     NV_STATUS status = NV_OK;
     nv_alloc_mapping_context_t *nvamc = NULL;
     nv_file_private_t *nvfp = NULL;
-    nv_linux_file_private_t *nvlfp = NULL;
-    nv_linux_state_t *nvl = NV_GET_NVL_FROM_NV_STATE(nv);
+    nvfd nvlfp = NULL;
     void *priv = NULL;
 
     nvfp = nv_get_file_private(fd, NV_IS_CTL_DEVICE(nv), &priv);
@@ -72,11 +71,6 @@ NV_STATUS NV_API_CALL nv_add_mapping_context_to_file(
 
         nvamc->mmap_start = nvuap->mmap_start;
         nvamc->mmap_size = nvuap->mmap_size;
-        if (nv_get_numa_status(nvl) == NV_NUMA_STATUS_ONLINE)
-        {
-            nvamc->page_array = nvuap->page_array;
-            nvamc->num_pages = nvuap->num_pages;
-        }
         nvamc->access_start = nvuap->access_start;
         nvamc->access_size = nvuap->access_size;
         nvamc->remap_prot_extra = nvuap->remap_prot_extra;

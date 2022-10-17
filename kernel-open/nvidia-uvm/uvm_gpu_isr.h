@@ -74,13 +74,6 @@ typedef struct
         // its lifetime
         NvU64 bottom_half_count;
 
-        // A bitmask of the CPUs on which the bottom half has executed. The
-        // corresponding bit gets set once the bottom half executes on that
-        // CPU.
-        // This mask is useful when testing that the bottom half is getting
-        // executed on the correct set of CPUs.
-        struct cpumask cpus_used_mask;
-
         // An array (one per possible CPU), which holds the number of times the
         // bottom half has executed on that CPU.
         NvU64 *cpu_exec_count;

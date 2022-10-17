@@ -40,7 +40,7 @@
 #endif
 
 #include "uvm_types.h"
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 
 enum {
     NVIDIA_UVM_PRIMARY_MINOR_NUMBER = 0,
@@ -59,7 +59,7 @@ int format_uuid_to_buffer(char *buffer, unsigned bufferLength, const NvProcessor
          kbasename(__FILE__),                         \
          __LINE__,                                    \
          __FUNCTION__,                                \
-         current->pid,                                \
+         current->tid,                                \
          ##__VA_ARGS__)
 
 #define UVM_PRINT_FUNC(func, fmt, ...)  \
@@ -116,7 +116,7 @@ bool uvm_debug_prints_enabled(void);
         UVM_ERR_PRINT("ERROR: %s : " msg "\n", uuidBuffer, ##__VA_ARGS__); \
     } while (0)
 
-#define UVM_PANIC()             UVM_PRINT_FUNC(panic, "\n")
+#define UVM_PANIC()             UVM_PRINT_FUNC(halt, "\n")
 #define UVM_PANIC_MSG(fmt, ...) UVM_PRINT_FUNC(panic, ": " fmt, ##__VA_ARGS__)
 
 #define UVM_PANIC_ON_MSG(cond, fmt, ...)        \
@@ -239,7 +239,7 @@ static int debug_mode(void)
 #endif
 }
 
-static inline void kmem_cache_destroy_safe(struct kmem_cache **ppCache)
+static inline void kmem_cache_destroy_safe(heap *ppCache)
 {
     if (ppCache)
     {
@@ -284,7 +284,7 @@ static NvU64 uvm_spin_loop_elapsed(const uvm_spin_loop_t *spin)
                       uvm_spin_loop_elapsed(__spin) / (1000*1000*1000));                \
                                                                                         \
         if (uvm_debug_prints_enabled())                                                 \
-            dump_stack();                                                               \
+            os_dump_stack();                                                            \
     }                                                                                   \
     __status;                                                                           \
 })
@@ -306,12 +306,6 @@ unsigned uvm_get_stale_thread_id(void);
 NvBool uvm_user_id_security_check(uid_t euidTarget);
 
 extern int uvm_enable_builtin_tests;
-
-static inline void uvm_init_character_device(struct cdev *cdev, const struct file_operations *fops)
-{
-    cdev_init(cdev, fops);
-    cdev->owner = THIS_MODULE;
-}
 
 typedef struct
 {
@@ -340,18 +334,15 @@ typedef struct
 
 // Returns whether the input file was opened against the UVM character device
 // file. A NULL input returns false.
-bool uvm_file_is_nvidia_uvm(struct file *filp);
+bool uvm_file_is_nvidia_uvm(uvm_fd filp);
 
 // Reads the first word in the supplied struct page.
-static inline void uvm_touch_page(struct page *page)
+static inline void uvm_touch_page(u64 pa)
 {
     char *mapping;
 
-    UVM_ASSERT(page);
-
-    mapping = (char *) kmap(page);
+    mapping = (char *) virt_from_linear_backed_phys(pa);
     (void)UVM_READ_ONCE(*mapping);
-    kunmap(page);
 }
 
 #endif /* _UVM_COMMON_H */

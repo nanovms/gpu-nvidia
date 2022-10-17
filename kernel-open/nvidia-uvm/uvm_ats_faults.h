@@ -20,7 +20,7 @@
     DEALINGS IN THE SOFTWARE.
 *******************************************************************************/
 
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_forward_decl.h"
 #include "uvm_lock.h"
 #include "uvm_global.h"
@@ -36,12 +36,10 @@ NV_STATUS uvm_ats_invalidate_tlbs(uvm_gpu_va_space_t *gpu_va_space,
                                   uvm_ats_fault_invalidate_t *ats_invalidate,
                                   uvm_tracker_t *out_tracker);
 
-static bool uvm_ats_can_service_faults(uvm_gpu_va_space_t *gpu_va_space, struct mm_struct *mm)
+static bool uvm_ats_can_service_faults(uvm_gpu_va_space_t *gpu_va_space)
 {
-    if (mm)
-        uvm_assert_mmap_lock_locked(mm);
     if (gpu_va_space->ats.enabled)
         UVM_ASSERT(g_uvm_global.ats.enabled);
 
-    return gpu_va_space->ats.enabled && mm;
+    return gpu_va_space->ats.enabled;
 }

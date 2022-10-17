@@ -24,7 +24,7 @@
 #ifndef __UVM_VA_POLICY_H__
 #define __UVM_VA_POLICY_H__
 
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_forward_decl.h"
 #include "uvm_processors.h"
 #include "uvm_range_tree.h"

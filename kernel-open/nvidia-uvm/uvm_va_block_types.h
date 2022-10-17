@@ -154,7 +154,7 @@ typedef enum
 // Page masks are printed using hex digits printing last to first from left to
 // right. For readability, a colon is added to separate each group of pages
 // stored in the same word of the bitmap.
-#define UVM_PAGE_MASK_WORDS                 (PAGES_PER_UVM_VA_BLOCK / BITS_PER_LONG)
+#define UVM_PAGE_MASK_WORDS                 (PAGES_PER_UVM_VA_BLOCK / 64)
 #define UVM_PAGE_MASK_PRINT_NUM_COLONS      (UVM_PAGE_MASK_WORDS > 0? UVM_PAGE_MASK_WORDS - 1 : 0)
 #define UVM_PAGE_MASK_PRINT_MIN_BUFFER_SIZE (PAGES_PER_UVM_VA_BLOCK / 4 + UVM_PAGE_MASK_PRINT_NUM_COLONS + 1)
 

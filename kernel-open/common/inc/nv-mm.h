@@ -77,23 +77,22 @@ typedef int vm_fault_t;
     #if defined(NV_GET_USER_PAGES_HAS_WRITE_AND_FORCE_ARGS)
         #define NV_GET_USER_PAGES get_user_pages
     #else
-        #include <linux/mm.h>
-
         static inline long NV_GET_USER_PAGES(unsigned long start,
                                              unsigned long nr_pages,
                                              int write,
                                              int force,
-                                             struct page **pages,
-                                             struct vm_area_struct **vmas)
+                                             NvU64 *pages,
+                                             vmap *vmas)
         {
-            unsigned int flags = 0;
+            unsigned long i;
 
-            if (write)
-                flags |= FOLL_WRITE;
-            if (force)
-                flags |= FOLL_FORCE;
+            for (i = 0; i < nr_pages; i++) {
+                volatile u64 *ptr = pointer_from_u64(start + i * PAGESIZE);
+                (void)(*ptr);   /* fault-in page */
+                pages[i] = physical_from_virtual((void *)ptr);
+            }
 
-            return get_user_pages(start, nr_pages, flags, pages, vmas);
+            return nr_pages;
         }
     #endif
 #endif
@@ -172,102 +171,16 @@ typedef int vm_fault_t;
     #if defined(NV_GET_USER_PAGES_HAS_WRITE_AND_FORCE_ARGS)
         #define NV_GET_USER_PAGES_REMOTE    get_user_pages
     #else
-        #include <linux/mm.h>
-        #include <linux/sched.h>
-
-        static inline long NV_GET_USER_PAGES_REMOTE(struct task_struct *tsk,
-                                                    struct mm_struct *mm,
-                                                    unsigned long start,
+        static inline long NV_GET_USER_PAGES_REMOTE(unsigned long start,
                                                     unsigned long nr_pages,
                                                     int write,
                                                     int force,
-                                                    struct page **pages,
-                                                    struct vm_area_struct **vmas)
+                                                    NvU64 *pages,
+                                                    vmap *vmas)
         {
-            unsigned int flags = 0;
-
-            if (write)
-                flags |= FOLL_WRITE;
-            if (force)
-                flags |= FOLL_FORCE;
-
-            return get_user_pages(tsk, mm, start, nr_pages, flags, pages, vmas);
+            return NV_GET_USER_PAGES(start, nr_pages, write, force, pages, vmas);
         }
     #endif
 #endif
-
-
-/*
- * The .virtual_address field was effectively renamed to .address, by these
- * two commits:
- *
- *  struct vm_fault: .address was added by:
- *   2016-12-14  82b0f8c39a3869b6fd2a10e180a862248736ec6f
- *
- *  struct vm_fault: .virtual_address was removed by:
- *   2016-12-14  1a29d85eb0f19b7d8271923d8917d7b4f5540b3e
- */
-static inline unsigned long nv_page_fault_va(struct vm_fault *vmf)
-{
-#if defined(NV_VM_FAULT_HAS_ADDRESS)
-    return vmf->address;
-#else
-    return (unsigned long)(vmf->virtual_address);
-#endif
-}
-
-static inline void nv_mmap_read_lock(struct mm_struct *mm)
-{
-#if defined(NV_MM_HAS_MMAP_LOCK)
-    mmap_read_lock(mm);
-#else
-    down_read(&mm->mmap_sem);
-#endif
-}
-
-static inline void nv_mmap_read_unlock(struct mm_struct *mm)
-{
-#if defined(NV_MM_HAS_MMAP_LOCK)
-    mmap_read_unlock(mm);
-#else
-    up_read(&mm->mmap_sem);
-#endif
-}
-
-static inline void nv_mmap_write_lock(struct mm_struct *mm)
-{
-#if defined(NV_MM_HAS_MMAP_LOCK)
-    mmap_write_lock(mm);
-#else
-    down_write(&mm->mmap_sem);
-#endif
-}
-
-static inline void nv_mmap_write_unlock(struct mm_struct *mm)
-{
-#if defined(NV_MM_HAS_MMAP_LOCK)
-    mmap_write_unlock(mm);
-#else
-    up_write(&mm->mmap_sem);
-#endif
-}
-
-static inline int nv_mm_rwsem_is_locked(struct mm_struct *mm)
-{
-#if defined(NV_MM_HAS_MMAP_LOCK)
-    return rwsem_is_locked(&mm->mmap_lock);
-#else
-    return rwsem_is_locked(&mm->mmap_sem);
-#endif
-}
-
-static inline struct rw_semaphore *nv_mmap_get_lock(struct mm_struct *mm)
-{
-#if defined(NV_MM_HAS_MMAP_LOCK)
-    return &mm->mmap_lock;
-#else
-    return &mm->mmap_sem;
-#endif
-}
 
 #endif // __NV_MM_H__

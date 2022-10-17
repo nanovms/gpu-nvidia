@@ -127,7 +127,7 @@ struct uvm_push_acquire_info_struct
 struct uvm_push_info_struct
 {
     // List node used to track available push info entries
-    struct list_head available_list_node;
+    struct list available_list_node;
 
     // Filename where the push was started
     const char *filename;

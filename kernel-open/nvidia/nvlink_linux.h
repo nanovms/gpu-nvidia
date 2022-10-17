@@ -24,12 +24,6 @@
 #ifndef _NVLINK_LINUX_H_
 #define _NVLINK_LINUX_H_
 
-#include <linux/init.h>        // for entry/exit macros
-#include <linux/sched.h>       // for "struct task_struct"
-#include <linux/kernel.h>      // for printk priority macros
-#include <linux/fs.h>
-
-
 #define NVLINK_DEVICE_NAME        "nvidia-nvlink"
 #define NVLINK_NUM_MINOR_DEVICES  1
 

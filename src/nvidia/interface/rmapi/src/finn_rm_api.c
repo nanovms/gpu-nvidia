@@ -17,7 +17,6 @@
 #include "ctrl/ctrl83de/ctrl83dedebug.h"
 #include "ctrl/ctrlb06f.h"
 
-#include <stddef.h>
 #if defined(NVRM) /* Kernel Mode */
 #include "nvport/nvport.h"
 #else /* User Mode */

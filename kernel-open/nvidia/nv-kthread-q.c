@@ -21,19 +21,12 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
+#include "nv-nanos.h"
 #include "nv-kthread-q.h"
 #include "nv-list-helpers.h"
 
-#include <linux/kthread.h>
-#include <linux/interrupt.h>
-#include <linux/completion.h>
-#include <linux/module.h>
-#include <linux/mm.h>
-
 #if defined(NV_LINUX_BUG_H_PRESENT)
     #include <linux/bug.h>
-#else
-    #include <asm/bug.h>
 #endif
 
 // Today's implementation is a little simpler and more limited than the
@@ -67,7 +60,7 @@
         }                                                    \
         else {                                               \
             WARN(1, "nv_kthread_q: task: %s: " fmt,          \
-                 current->comm,                              \
+                 current->name,                              \
                  ##__VA_ARGS__);                             \
         }                                                    \
     } while (0)
@@ -115,16 +108,14 @@ static int _main_loop(void *args)
         q_item = NULL;
     }
 
-    while (!kthread_should_stop())
-        schedule();
-
-    return 0;
+    q->ctx = NULL;
+    kern_yield();
 }
 
 void nv_kthread_q_stop(nv_kthread_q_t *q)
 {
     // check if queue has been properly initialized
-    if (unlikely(!q->q_kthread))
+    if (unlikely(!q->ctx))
         return;
 
     nv_kthread_q_flush(q);
@@ -141,9 +132,6 @@ void nv_kthread_q_stop(nv_kthread_q_t *q)
 
         // Wake up the kthread so that it can see that it needs to stop:
         up(&q->q_sem);
-
-        kthread_stop(q->q_kthread);
-        q->q_kthread = NULL;
     }
 }
 
@@ -221,6 +209,8 @@ static struct task_struct *thread_create_on_node(int (*threadfn)(void *data),
 
 int nv_kthread_q_init_on_node(nv_kthread_q_t *q, const char *q_name, int preferred_node)
 {
+    u64 *f;
+
     memset(q, 0, sizeof(*q));
 
     INIT_LIST_HEAD(&q->q_list_head);
@@ -228,7 +218,7 @@ int nv_kthread_q_init_on_node(nv_kthread_q_t *q, const char *q_name, int preferr
     sema_init(&q->q_sem, 0);
 
     if (preferred_node == NV_KTHREAD_NO_NODE) {
-        q->q_kthread = kthread_create(_main_loop, q, q_name);
+        q->ctx = (context)allocate_kernel_context(current_cpu());
     }
     else {
 #if NV_KTHREAD_Q_SUPPORTS_AFFINITY() == 1
@@ -238,17 +228,29 @@ int nv_kthread_q_init_on_node(nv_kthread_q_t *q, const char *q_name, int preferr
 #endif
     }
 
-    if (IS_ERR(q->q_kthread)) {
-        int err = PTR_ERR(q->q_kthread);
+    if (q->ctx == INVALID_ADDRESS) {
+        int err = -ENOMEM;
 
         // Clear q_kthread before returning so that nv_kthread_q_stop() can be
         // safely called on it making error handling easier.
-        q->q_kthread = NULL;
+        q->ctx = NULL;
 
         return err;
     }
 
-    wake_up_process(q->q_kthread);
+    f = q->ctx->frame;
+#if defined(NVCPU_X86_64)
+    f[FRAME_RIP] = u64_from_pointer(_main_loop);
+    f[FRAME_RDI] = u64_from_pointer(q);
+    f[FRAME_CS] = 0x8;
+    f[FRAME_SS] = 0x0;
+#elif defined(NVCPU_AARCH64)
+    f[FRAME_ELR] = u64_from_pointer(_main_loop);
+    f[FRAME_X0] = u64_from_pointer(q);
+#endif
+    frame_reset_stack(f);
+    f[FRAME_FULL] = true;
+    context_schedule_return(q->ctx);
 
     return 0;
 }
@@ -299,24 +301,25 @@ int nv_kthread_q_schedule_q_item(nv_kthread_q_t *q,
 
 static void _q_flush_function(void *args)
 {
-    struct completion *completion = (struct completion *)args;
-    complete(completion);
+    boolean *done = args;
+    *done = true;
 }
 
 
 static void _raw_q_flush(nv_kthread_q_t *q)
 {
     nv_kthread_q_item_t q_item;
-    DECLARE_COMPLETION(completion);
+    volatile boolean done = false;
 
-    nv_kthread_q_item_init(&q_item, _q_flush_function, &completion);
+    nv_kthread_q_item_init(&q_item, _q_flush_function, (void *)&done);
 
     _raw_q_schedule(q, &q_item);
 
     // Wait for the flush item to run. Once it has run, then all of the
     // previously queued items in front of it will have run, so that means
     // the flush is complete.
-    wait_for_completion(&completion);
+    while (!done)
+        os_schedule();
 }
 
 void nv_kthread_q_flush(nv_kthread_q_t *q)

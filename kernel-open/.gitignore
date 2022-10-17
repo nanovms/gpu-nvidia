@@ -1,7 +1,4 @@
-.*.cmd
-*.ko
-*.mod
-*.mod.c
+closure_templates.h
 conftest/
 conftest[0-9]*.c
 modules.order

@@ -26,7 +26,7 @@
 
 #include "uvm_types.h"
 #include "uvm_ioctl.h"
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_lock.h"
 #include "uvm_thread_context.h"
 #include "uvm_kvmalloc.h"
@@ -40,25 +40,20 @@
 
 // The UVM_ROUTE_CMD_* macros are only intended for use in the ioctl routines
 
-// If the BUILD_BUG_ON fires, use __UVM_ROUTE_CMD_ALLOC instead.
 #define __UVM_ROUTE_CMD_STACK(cmd, params_type, function_name, do_init_check)       \
     case cmd:                                                                       \
     {                                                                               \
-        params_type params;                                                         \
-        BUILD_BUG_ON(sizeof(params) > UVM_MAX_IOCTL_PARAM_STACK_SIZE);              \
-        if (nv_copy_from_user(&params, (void __user*)arg, sizeof(params)))          \
+        params_type *params = varg(ap, params_type *);                              \
+        if (!validate_user_memory(params, sizeof(*params), true))                   \
             return -EFAULT;                                                         \
                                                                                     \
-        params.rmStatus = uvm_global_get_status();                                  \
-        if (params.rmStatus == NV_OK) {                                             \
+        params->rmStatus = uvm_global_get_status();                                 \
+        if (params->rmStatus == NV_OK) {                                            \
             if (do_init_check)                                                      \
-                params.rmStatus = uvm_va_space_initialized(uvm_va_space_get(filp)); \
-            if (likely(params.rmStatus == NV_OK))                                   \
-                params.rmStatus = function_name(&params, filp);                     \
+                params->rmStatus = uvm_va_space_initialized(uvm_va_space_get(filp));\
+            if (params->rmStatus == NV_OK)                                          \
+                params->rmStatus = function_name(params, filp);                     \
         }                                                                           \
-                                                                                    \
-        if (nv_copy_to_user((void __user*)arg, &params, sizeof(params)))            \
-            return -EFAULT;                                                         \
                                                                                     \
         return 0;                                                                   \
     }
@@ -72,34 +67,7 @@
 #define UVM_ROUTE_CMD_STACK_INIT_CHECK(cmd, function_name) \
     __UVM_ROUTE_CMD_STACK(cmd, cmd##_PARAMS, function_name, true)
 
-// If the BUILD_BUG_ON fires, use __UVM_ROUTE_CMD_STACK instead
-#define __UVM_ROUTE_CMD_ALLOC(cmd, params_type, function_name, do_init_check)           \
-    case cmd:                                                                           \
-    {                                                                                   \
-        int ret = 0;                                                                    \
-        params_type *params = uvm_kvmalloc(sizeof(*params));                            \
-        if (!params)                                                                    \
-            return -ENOMEM;                                                             \
-        BUILD_BUG_ON(sizeof(*params) <= UVM_MAX_IOCTL_PARAM_STACK_SIZE);                \
-        if (nv_copy_from_user(params, (void __user*)arg, sizeof(*params))) {            \
-            uvm_kvfree(params);                                                         \
-            return -EFAULT;                                                             \
-        }                                                                               \
-                                                                                        \
-        params->rmStatus = uvm_global_get_status();                                     \
-        if (params->rmStatus == NV_OK) {                                                \
-            if (do_init_check)                                                          \
-                params->rmStatus = uvm_va_space_initialized(uvm_va_space_get(filp));    \
-            if (likely(params->rmStatus == NV_OK))                                      \
-                params->rmStatus = function_name(params, filp);                         \
-        }                                                                               \
-                                                                                        \
-        if (nv_copy_to_user((void __user*)arg, params, sizeof(*params)))                \
-            ret = -EFAULT;                                                              \
-                                                                                        \
-        uvm_kvfree(params);                                                             \
-        return ret;                                                                     \
-    }
+#define __UVM_ROUTE_CMD_ALLOC   __UVM_ROUTE_CMD_STACK
 
 #define UVM_ROUTE_CMD_ALLOC_NO_INIT_CHECK(cmd, function_name) \
     __UVM_ROUTE_CMD_ALLOC(cmd, cmd##_PARAMS, function_name, false)
@@ -212,45 +180,45 @@ bool uvm_is_valid_vma_range(struct mm_struct *mm, NvU64 start, NvU64 length);
 //          mm->mmap_lock must also be held in at least read mode.
 NV_STATUS uvm_api_range_type_check(uvm_va_space_t *va_space, struct mm_struct *mm, NvU64 base, NvU64 length);
 
-NV_STATUS uvm_api_pageable_mem_access_on_gpu(UVM_PAGEABLE_MEM_ACCESS_ON_GPU_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_register_gpu(UVM_REGISTER_GPU_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_unregister_gpu(UVM_UNREGISTER_GPU_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_create_range_group(UVM_CREATE_RANGE_GROUP_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_destroy_range_group(UVM_DESTROY_RANGE_GROUP_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_enable_peer_access(UVM_ENABLE_PEER_ACCESS_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_disable_peer_access(UVM_DISABLE_PEER_ACCESS_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_set_range_group(UVM_SET_RANGE_GROUP_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_create_external_range(UVM_CREATE_EXTERNAL_RANGE_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_map_external_allocation(UVM_MAP_EXTERNAL_ALLOCATION_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_map_external_sparse(UVM_MAP_EXTERNAL_SPARSE_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_free(UVM_FREE_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_prevent_migration_range_groups(UVM_PREVENT_MIGRATION_RANGE_GROUPS_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_allow_migration_range_groups(UVM_ALLOW_MIGRATION_RANGE_GROUPS_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_set_preferred_location(const UVM_SET_PREFERRED_LOCATION_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_unset_preferred_location(const UVM_UNSET_PREFERRED_LOCATION_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_set_accessed_by(const UVM_SET_ACCESSED_BY_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_unset_accessed_by(const UVM_UNSET_ACCESSED_BY_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_register_gpu_va_space(UVM_REGISTER_GPU_VASPACE_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_unregister_gpu_va_space(UVM_UNREGISTER_GPU_VASPACE_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_register_channel(UVM_REGISTER_CHANNEL_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_unregister_channel(UVM_UNREGISTER_CHANNEL_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_enable_read_duplication(const UVM_ENABLE_READ_DUPLICATION_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_disable_read_duplication(const UVM_DISABLE_READ_DUPLICATION_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_migrate(UVM_MIGRATE_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_enable_system_wide_atomics(UVM_ENABLE_SYSTEM_WIDE_ATOMICS_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_disable_system_wide_atomics(UVM_DISABLE_SYSTEM_WIDE_ATOMICS_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_tools_init_event_tracker(UVM_TOOLS_INIT_EVENT_TRACKER_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_tools_set_notification_threshold(UVM_TOOLS_SET_NOTIFICATION_THRESHOLD_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_tools_event_queue_enable_events(UVM_TOOLS_EVENT_QUEUE_ENABLE_EVENTS_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_tools_event_queue_disable_events(UVM_TOOLS_EVENT_QUEUE_DISABLE_EVENTS_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_tools_enable_counters(UVM_TOOLS_ENABLE_COUNTERS_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_tools_disable_counters(UVM_TOOLS_DISABLE_COUNTERS_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_tools_read_process_memory(UVM_TOOLS_READ_PROCESS_MEMORY_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_tools_write_process_memory(UVM_TOOLS_WRITE_PROCESS_MEMORY_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_map_dynamic_parallelism_region(UVM_MAP_DYNAMIC_PARALLELISM_REGION_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_unmap_external(UVM_UNMAP_EXTERNAL_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_migrate_range_group(UVM_MIGRATE_RANGE_GROUP_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_alloc_semaphore_pool(UVM_ALLOC_SEMAPHORE_POOL_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_populate_pageable(const UVM_POPULATE_PAGEABLE_PARAMS *params, struct file *filp);
+NV_STATUS uvm_api_pageable_mem_access_on_gpu(UVM_PAGEABLE_MEM_ACCESS_ON_GPU_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_register_gpu(UVM_REGISTER_GPU_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_unregister_gpu(UVM_UNREGISTER_GPU_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_create_range_group(UVM_CREATE_RANGE_GROUP_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_destroy_range_group(UVM_DESTROY_RANGE_GROUP_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_enable_peer_access(UVM_ENABLE_PEER_ACCESS_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_disable_peer_access(UVM_DISABLE_PEER_ACCESS_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_set_range_group(UVM_SET_RANGE_GROUP_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_create_external_range(UVM_CREATE_EXTERNAL_RANGE_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_map_external_allocation(UVM_MAP_EXTERNAL_ALLOCATION_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_map_external_sparse(UVM_MAP_EXTERNAL_SPARSE_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_free(UVM_FREE_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_prevent_migration_range_groups(UVM_PREVENT_MIGRATION_RANGE_GROUPS_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_allow_migration_range_groups(UVM_ALLOW_MIGRATION_RANGE_GROUPS_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_set_preferred_location(const UVM_SET_PREFERRED_LOCATION_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_unset_preferred_location(const UVM_UNSET_PREFERRED_LOCATION_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_set_accessed_by(const UVM_SET_ACCESSED_BY_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_unset_accessed_by(const UVM_UNSET_ACCESSED_BY_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_register_gpu_va_space(UVM_REGISTER_GPU_VASPACE_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_unregister_gpu_va_space(UVM_UNREGISTER_GPU_VASPACE_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_register_channel(UVM_REGISTER_CHANNEL_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_unregister_channel(UVM_UNREGISTER_CHANNEL_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_enable_read_duplication(const UVM_ENABLE_READ_DUPLICATION_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_disable_read_duplication(const UVM_DISABLE_READ_DUPLICATION_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_migrate(UVM_MIGRATE_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_enable_system_wide_atomics(UVM_ENABLE_SYSTEM_WIDE_ATOMICS_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_disable_system_wide_atomics(UVM_DISABLE_SYSTEM_WIDE_ATOMICS_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_tools_init_event_tracker(UVM_TOOLS_INIT_EVENT_TRACKER_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_tools_set_notification_threshold(UVM_TOOLS_SET_NOTIFICATION_THRESHOLD_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_tools_event_queue_enable_events(UVM_TOOLS_EVENT_QUEUE_ENABLE_EVENTS_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_tools_event_queue_disable_events(UVM_TOOLS_EVENT_QUEUE_DISABLE_EVENTS_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_tools_enable_counters(UVM_TOOLS_ENABLE_COUNTERS_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_tools_disable_counters(UVM_TOOLS_DISABLE_COUNTERS_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_tools_read_process_memory(UVM_TOOLS_READ_PROCESS_MEMORY_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_tools_write_process_memory(UVM_TOOLS_WRITE_PROCESS_MEMORY_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_map_dynamic_parallelism_region(UVM_MAP_DYNAMIC_PARALLELISM_REGION_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_unmap_external(UVM_UNMAP_EXTERNAL_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_migrate_range_group(UVM_MIGRATE_RANGE_GROUP_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_alloc_semaphore_pool(UVM_ALLOC_SEMAPHORE_POOL_PARAMS *params, uvm_fd filp);
+NV_STATUS uvm_api_populate_pageable(const UVM_POPULATE_PAGEABLE_PARAMS *params, uvm_fd filp);
 
 #endif // __UVM_API_H__

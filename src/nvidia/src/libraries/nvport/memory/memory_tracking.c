@@ -862,7 +862,7 @@ portMemPrintTrackingInfo
             // rmtest_gsp test script (dvs_gsp_sanity.sh) depends on this print, so do not change
             // format without updating script!
             //
-            portDbgPrintf("ACTIVE: %u allocations, %llu bytes allocated (%llu useful, %llu meta)\n",
+            portDbgPrintf("ACTIVE: %u allocations, %lu bytes allocated (%lu useful, %lu meta)\n",
                         stats.numAllocations,
                         (NvU64) stats.allocatedSize,
                         (NvU64) stats.usefulSize,
@@ -877,7 +877,7 @@ portMemPrintTrackingInfo
             portMemSet(&stats, 0, sizeof(stats));
 
             portMemExTrackingGetTotalStats(pTracking->pAllocator, &stats);
-            portDbgPrintf("TOTAL:  %u allocations, %llu bytes allocated (%llu useful, %llu meta)\n",
+            portDbgPrintf("TOTAL:  %u allocations, %lu bytes allocated (%lu useful, %lu meta)\n",
                         stats.numAllocations,
                         (NvU64) stats.allocatedSize,
                         (NvU64) stats.usefulSize,
@@ -892,7 +892,7 @@ portMemPrintTrackingInfo
             portMemSet(&stats, 0, sizeof(stats));
 
             portMemExTrackingGetPeakStats(pTracking->pAllocator, &stats);
-            portDbgPrintf("PEAK:   %u allocations, %llu bytes allocated (%llu useful, %llu meta)\n",
+            portDbgPrintf("PEAK:   %u allocations, %lu bytes allocated (%lu useful, %lu meta)\n",
                         stats.numAllocations,
                         (NvU64) stats.allocatedSize,
                         (NvU64) stats.usefulSize,
@@ -918,7 +918,7 @@ portMemPrintTrackingInfo
                     portDbgPrintf("Currently active allocations:\n");
                     bPrinted = NV_TRUE;
                 }
-                portDbgPrintf(" - A:%p - 0x%p [%8llu bytes] T=%llu ",
+                portDbgPrintf(" - A:%p - 0x%p [%8lu bytes] T=%lu ",
                                 info.pAllocator,
                                 info.pMemory,
                                 (NvU64)info.size,

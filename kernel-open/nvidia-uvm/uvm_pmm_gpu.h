@@ -56,7 +56,7 @@
 #include "uvm_processors.h"
 #include "uvm_tracker.h"
 #include "uvm_va_block_types.h"
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_types.h"
 #include "nv_uvm_types.h"
 
@@ -259,7 +259,7 @@ struct uvm_gpu_chunk_struct
     // Protected by PMM's list_lock when managed by PMM. Notably the list node
     // can be used by the allocator of the chunk after alloc and before the
     // chunk is unpinned or freed.
-    struct list_head list;
+    struct list list;
 
     // The VA block using the chunk, if any.
     // User chunks that are not backed by a VA block are considered to be
@@ -356,10 +356,10 @@ typedef struct
         //
         // Updated by the VA block code with
         // uvm_pmm_gpu_mark_root_chunk_(un)used().
-        struct list_head va_block_unused;
+        struct list va_block_unused;
 
         // List of root chunks used by VA blocks
-        struct list_head va_block_used;
+        struct list va_block_used;
 
         uvm_gpu_root_chunk_indirect_peer_t indirect_peer[UVM_ID_MAX_GPUS];
     } root_chunks;
@@ -374,7 +374,7 @@ typedef struct
     uvm_spinlock_t list_lock;
 
     // Free chunk lists. There are separate lists for non-zero and zero chunks.
-    struct list_head free_list[UVM_PMM_GPU_MEMORY_TYPE_COUNT][UVM_MAX_CHUNK_SIZES][UVM_PMM_LIST_ZERO_COUNT];
+    struct list free_list[UVM_PMM_GPU_MEMORY_TYPE_COUNT][UVM_MAX_CHUNK_SIZES][UVM_PMM_LIST_ZERO_COUNT];
 
     // Inject an error after evicting a number of chunks. 0 means no error left
     // to be injected.
@@ -418,7 +418,7 @@ uvm_gpu_t *uvm_gpu_chunk_get_gpu(const uvm_gpu_chunk_t *chunk);
 // - The GPU must have NUMA support enabled.
 // - For chunks smaller than a system page, this function returns the struct
 // page containing the chunk's starting address.
-struct page *uvm_gpu_chunk_to_page(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk);
+u64 uvm_gpu_chunk_to_page(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk);
 
 // Allocates num_chunks chunks of size chunk_size in caller-supplied array (chunks).
 //

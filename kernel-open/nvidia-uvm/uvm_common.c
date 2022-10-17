@@ -18,7 +18,7 @@
 *******************************************************************************/
 
 #include "uvm_common.h"
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_forward_decl.h"
 
 // TODO: Bug 1710855: Tweak this number through benchmarks
@@ -198,12 +198,12 @@ int nv_status_to_errno(NV_STATUS status)
 //
 unsigned uvm_get_stale_process_id(void)
 {
-    return (unsigned)task_tgid_vnr(current);
+    return current->p->pid;
 }
 
 unsigned uvm_get_stale_thread_id(void)
 {
-    return (unsigned)task_pid_vnr(current);
+    return current->tid;
 }
 
 //
@@ -250,11 +250,11 @@ NV_STATUS uvm_spin_loop(uvm_spin_loop_t *spin)
     // TODO: Bug 1710855: Look into proper prioritization of these threads as a longer-term
     //       solution.
     if (curr - spin->start_time_ns >= UVM_SPIN_LOOP_SCHEDULE_TIMEOUT_NS && NV_MAY_SLEEP()) {
-        schedule();
+        context_reschedule(get_current_context(current_cpu()));
         curr = NV_GETTIME();
     }
 
-    cpu_relax();
+    kern_pause();
 
     // TODO: Bug 1710855: Also check fatal_signal_pending() here if the caller can handle it.
 

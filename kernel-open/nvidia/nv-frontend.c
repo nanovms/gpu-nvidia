@@ -22,7 +22,7 @@
  */
 
 #include "os-interface.h"
-#include "nv-linux.h"
+#include "nv-nanos.h"
 #include "nv-reg.h"
 #include "nv-frontend.h"
 
@@ -71,35 +71,9 @@ nvidia_module_t *nv_minor_num_table[NV_FRONTEND_CONTROL_DEVICE_MINOR_MAX + 1];
 int nvidia_init_module(void);
 void nvidia_exit_module(void);
 
-/* EXPORTS to Linux Kernel */
-
-int          nvidia_frontend_open(struct inode *, struct file *);
-int          nvidia_frontend_close(struct inode *, struct file *);
-unsigned int nvidia_frontend_poll(struct file *, poll_table *);
-int          nvidia_frontend_ioctl(struct inode *, struct file *, unsigned int, unsigned long);
-long         nvidia_frontend_unlocked_ioctl(struct file *, unsigned int, unsigned long);
-long         nvidia_frontend_compat_ioctl(struct file *, unsigned int, unsigned long);
-int          nvidia_frontend_mmap(struct file *, struct vm_area_struct *);
-
-/* character driver entry points */
-static struct file_operations nv_frontend_fops = {
-    .owner     = THIS_MODULE,
-    .poll      = nvidia_frontend_poll,
-#if defined(NV_FILE_OPERATIONS_HAS_IOCTL)
-    .ioctl     = nvidia_frontend_ioctl,
-#endif
-    .unlocked_ioctl = nvidia_frontend_unlocked_ioctl,
-#if NVCPU_IS_X86_64 || NVCPU_IS_AARCH64
-    .compat_ioctl = nvidia_frontend_compat_ioctl,
-#endif
-    .mmap      = nvidia_frontend_mmap,
-    .open      = nvidia_frontend_open,
-    .release   = nvidia_frontend_close,
-};
-
 /* Helper functions */
 
-static int add_device(nvidia_module_t *module, nv_linux_state_t *device, NvBool all)
+static int add_device(nvidia_module_t *module, nv_nanos_state_t *device, NvBool all)
 {
     NvU32 i;
     int rc = -1;
@@ -130,7 +104,7 @@ static int add_device(nvidia_module_t *module, nv_linux_state_t *device, NvBool 
     return rc;
 }
 
-static int remove_device(nvidia_module_t *module, nv_linux_state_t *device)
+static int remove_device(nvidia_module_t *module, nv_nanos_state_t *device)
 {
     int rc = -1;
 
@@ -144,12 +118,34 @@ static int remove_device(nvidia_module_t *module, nv_linux_state_t *device)
     return rc;
 }
 
+closure_function(1, 1, sysreturn, nvidia_frontend_open,
+                 u32, minor,
+                 file, f)
+{
+    sysreturn rc = -ENODEV;
+    nvidia_module_t *module = NULL;
+
+    NvU32 minor_num = bound(minor);
+
+    down(&nv_module_table_lock);
+    module = nv_minor_num_table[minor_num];
+
+    if (module != NULL)
+    {
+        rc = module->open(minor_num, f);
+    }
+
+    up(&nv_module_table_lock);
+    return rc;
+}
+
 /* Export functions */
 
 int nvidia_register_module(nvidia_module_t *module)
 {
     int rc = 0;
     NvU32 ctrl_minor_num;
+    spec_file_open open;
 
     down(&nv_module_table_lock);
     if (module->instance >= NV_MAX_MODULE_INSTANCES)
@@ -161,6 +157,17 @@ int nvidia_register_module(nvidia_module_t *module)
     }
 
     ctrl_minor_num = NV_FRONTEND_CONTROL_DEVICE_MINOR_MAX - module->instance;
+    open = closure(heap_locked(get_kernel_heaps()), nvidia_frontend_open, ctrl_minor_num);
+    if (open == INVALID_ADDRESS) {
+        rc = -ENOMEM;
+        goto done;
+    }
+    if (!create_special_file("/dev/nvidiactl", open, 0,
+        makedev(NV_MAJOR_DEVICE_NUMBER, NV_CONTROL_DEVICE_MINOR))) {
+        deallocate_closure(open);
+        rc = -ENOSPC;
+        goto done;
+    }
     nv_minor_num_table[ctrl_minor_num] = module;
     nv_num_instances++;
 done:
@@ -196,7 +203,7 @@ int nvidia_unregister_module(nvidia_module_t *module)
 }
 EXPORT_SYMBOL(nvidia_unregister_module);
 
-int nvidia_frontend_add_device(nvidia_module_t *module, nv_linux_state_t * device)
+int nvidia_frontend_add_device(nvidia_module_t *module, nv_nanos_state_t * device)
 {
     int rc = -1;
     NvU32 ctrl_minor_num;
@@ -212,6 +219,37 @@ int nvidia_frontend_add_device(nvidia_module_t *module, nv_linux_state_t * devic
     else
     {
         rc = add_device(module, device, NV_FALSE);
+        if (rc == 0) {
+            NvU32 minor = device->minor_num;
+            spec_file_open open = closure(heap_locked(get_kernel_heaps()), nvidia_frontend_open,
+                minor);
+
+            if (open != INVALID_ADDRESS) {
+                char file_path[] = "/dev/nvidiaXXX";
+
+                if (minor < 10) {
+                    file_path[11] = '0' + minor;
+                    file_path[12] = '\0';
+                } else if (minor < 100) {
+                    file_path[11] = '0' + minor / 10;
+                    file_path[12] = '0' + minor % 10;
+                    file_path[13] = '\0';
+                } else {
+                    file_path[11] = '0' + minor / 100;
+                    file_path[12] = '0' + (minor / 10) % 10;
+                    file_path[13] = '0' + minor % 10;
+                }
+                if (!create_special_file(file_path, open, 0,
+                    makedev(NV_MAJOR_DEVICE_NUMBER, minor))) {
+                    deallocate_closure(open);
+                    rc = -1;
+                }
+            } else {
+                rc = -1;
+            }
+            if (rc < 0)
+                remove_device(module, device);
+        }
     }
     up(&nv_module_table_lock);
 
@@ -219,7 +257,7 @@ int nvidia_frontend_add_device(nvidia_module_t *module, nv_linux_state_t * devic
 }
 EXPORT_SYMBOL(nvidia_frontend_add_device);
 
-int nvidia_frontend_remove_device(nvidia_module_t *module, nv_linux_state_t * device)
+int nvidia_frontend_remove_device(nvidia_module_t *module, nv_nanos_state_t * device)
 {
     int rc = 0;
     NvU32 ctrl_minor_num;
@@ -242,171 +280,20 @@ int nvidia_frontend_remove_device(nvidia_module_t *module, nv_linux_state_t * de
 }
 EXPORT_SYMBOL(nvidia_frontend_remove_device);
 
-int nvidia_frontend_open(
-    struct inode *inode,
-    struct file *file
-)
+int init(status_handler complete)
 {
-    int rc = -ENODEV;
-    nvidia_module_t *module = NULL;
-
-    NvU32 minor_num = NV_FRONTEND_MINOR_NUMBER(inode);
-
-    down(&nv_module_table_lock);
-    module = nv_minor_num_table[minor_num];
-
-    if ((module != NULL) && (module->open != NULL))
-    {
-        // Increment the reference count of module to ensure that module does
-        // not get unloaded if its corresponding device file is open, for
-        // example nvidiaN.ko should not get unloaded if /dev/nvidiaN is open.
-        if (!try_module_get(module->owner))
-        {
-            up(&nv_module_table_lock);
-            return -ENODEV;
-        }
-        rc = module->open(inode, file);
-        if (rc < 0)
-        {
-            module_put(module->owner);
-        }
-    }
-
-    up(&nv_module_table_lock);
-    return rc;
-}
-
-int nvidia_frontend_close(
-    struct inode *inode,
-    struct file *file
-)
-{
-    int rc = -ENODEV;
-    nvidia_module_t *module = NULL;
-
-    NvU32 minor_num = NV_FRONTEND_MINOR_NUMBER(inode);
-
-    module = nv_minor_num_table[minor_num];
-
-    if ((module != NULL) && (module->close != NULL))
-    {
-        rc = module->close(inode, file);
-
-        // Decrement the reference count of module.
-        module_put(module->owner);
-    }
-
-    return rc;
-}
-
-unsigned int nvidia_frontend_poll(
-    struct file *file,
-    poll_table *wait
-)
-{
-    unsigned int mask = 0;
-    struct inode *inode = NV_FILE_INODE(file);
-    NvU32 minor_num = NV_FRONTEND_MINOR_NUMBER(inode);
-    nvidia_module_t *module = nv_minor_num_table[minor_num];
-
-    if ((module != NULL) && (module->poll != NULL))
-        mask = module->poll(file, wait);
-
-    return mask;
-}
-
-int nvidia_frontend_ioctl(
-    struct inode *inode,
-    struct file *file,
-    unsigned int cmd,
-    unsigned long i_arg)
-{
-    int rc = -ENODEV;
-    nvidia_module_t *module = NULL;
-
-    NvU32 minor_num = NV_FRONTEND_MINOR_NUMBER(inode);
-    module = nv_minor_num_table[minor_num];
-
-    if ((module != NULL) && (module->ioctl != NULL))
-        rc = module->ioctl(inode, file, cmd, i_arg);
-
-    return rc;
-}
-
-long nvidia_frontend_unlocked_ioctl(
-    struct file *file,
-    unsigned int cmd,
-    unsigned long i_arg
-)
-{
-    return nvidia_frontend_ioctl(NV_FILE_INODE(file), file, cmd, i_arg);
-}
-
-long nvidia_frontend_compat_ioctl(
-    struct file *file,
-    unsigned int cmd,
-    unsigned long i_arg
-)
-{
-    return nvidia_frontend_ioctl(NV_FILE_INODE(file), file, cmd, i_arg);
-}
-
-int nvidia_frontend_mmap(
-    struct file *file,
-    struct vm_area_struct *vma
-)
-{
-    int rc = -ENODEV;
-    struct inode *inode = NV_FILE_INODE(file);
-    NvU32 minor_num = NV_FRONTEND_MINOR_NUMBER(inode);
-    nvidia_module_t *module = nv_minor_num_table[minor_num];
-
-    if ((module != NULL) && (module->mmap != NULL))
-        rc = module->mmap(file, vma);
-
-    return rc;
-}
-
-static int __init nvidia_frontend_init_module(void)
-{
-    int status = 0;
+    extern int uvm_init(void);
+    extern void nv_read_firmware(status_handler complete);
 
     // initialise nvidia module table;
     nv_num_instances = 0;
     memset(nv_minor_num_table, 0, sizeof(nv_minor_num_table));
     NV_INIT_MUTEX(&nv_module_table_lock);
 
-    status = nvidia_init_module();
-    if (status < 0)
+    if ((nvidia_init_module() < 0) || (uvm_init() < 0))
     {
-        return status;
+        return KLIB_INIT_FAILED;
     }
-
-    // register char device
-    status = register_chrdev(NV_MAJOR_DEVICE_NUMBER, "nvidia-frontend", &nv_frontend_fops);
-    if (status < 0)
-    {
-        printk("NVRM: register_chrdev() failed!\n");
-        nvidia_exit_module();
-    }
-
-    return status;
+    nv_read_firmware(complete);
+    return KLIB_INIT_IN_PROGRESS;
 }
-
-static void __exit nvidia_frontend_exit_module(void)
-{
-    /*
-     * If this is the last nvidia_module to be unregistered, cleanup and
-     * unregister char dev
-     */
-    if (nv_num_instances == 1)
-    {
-        unregister_chrdev(NV_MAJOR_DEVICE_NUMBER, "nvidia-frontend");
-    }
-
-    nvidia_exit_module();
-}
-
-module_init(nvidia_frontend_init_module);
-module_exit(nvidia_frontend_exit_module);
-

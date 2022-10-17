@@ -24,7 +24,7 @@
 #ifndef __UVM_PERF_THRASHING_H__
 #define __UVM_PERF_THRASHING_H__
 
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_extern_decl.h"
 #include "uvm_forward_decl.h"
 #include "uvm_processors.h"

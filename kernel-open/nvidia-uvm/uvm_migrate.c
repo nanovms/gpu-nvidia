@@ -23,7 +23,7 @@
 
 #include "uvm_common.h"
 #include "uvm_ioctl.h"
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_global.h"
 #include "uvm_gpu.h"
 #include "uvm_lock.h"
@@ -404,7 +404,7 @@ static void preunmap_multi_block(uvm_va_range_t *va_range,
     }
 
     if (num_unmap_pages > 0)
-        unmap_mapping_range(&va_range->va_space->mapping, start, end - start + 1, 1);
+        unmap(start, end - start + 1);
 }
 
 static NV_STATUS uvm_va_range_migrate_multi_block(uvm_va_range_t *va_range,
@@ -822,14 +822,13 @@ void uvm_migrate_exit()
     uvm_migrate_pageable_exit();
 }
 
-NV_STATUS uvm_api_migrate(UVM_MIGRATE_PARAMS *params, struct file *filp)
+NV_STATUS uvm_api_migrate(UVM_MIGRATE_PARAMS *params, uvm_fd filp)
 {
     uvm_va_space_t *va_space = uvm_va_space_get(filp);
     uvm_tracker_t tracker = UVM_TRACKER_INIT();
     uvm_tracker_t *tracker_ptr = NULL;
     uvm_gpu_t *dest_gpu = NULL;
     uvm_va_range_t *sema_va_range = NULL;
-    struct mm_struct *mm;
     NV_STATUS status = NV_OK;
     bool flush_events = false;
     const bool synchronous = !(params->flags & UVM_MIGRATE_FLAG_ASYNC);
@@ -854,7 +853,6 @@ NV_STATUS uvm_api_migrate(UVM_MIGRATE_PARAMS *params, struct file *filp)
     }
 
     // mmap_lock will be needed if we have to create CPU mappings
-    mm = uvm_va_space_mm_or_current_retain_lock(va_space);
     uvm_va_space_down_read(va_space);
 
     if (synchronous) {
@@ -904,10 +902,10 @@ NV_STATUS uvm_api_migrate(UVM_MIGRATE_PARAMS *params, struct file *filp)
         tracker_ptr = &tracker;
 
     if (params->length > 0) {
-        status = uvm_api_range_type_check(va_space, mm, params->base, params->length);
+        status = uvm_api_range_type_check(va_space, NULL, params->base, params->length);
         if (status == NV_OK) {
             status = uvm_migrate(va_space,
-                                 mm,
+                                 NULL,
                                  params->base,
                                  params->length,
                                  (dest_gpu ? dest_gpu->id : UVM_ID_CPU),
@@ -918,7 +916,6 @@ NV_STATUS uvm_api_migrate(UVM_MIGRATE_PARAMS *params, struct file *filp)
             uvm_migrate_args_t uvm_migrate_args =
             {
                 .va_space               = va_space,
-                .mm                     = mm,
                 .start                  = params->base,
                 .length                 = params->length,
                 .dst_id                 = (dest_gpu ? dest_gpu->id : UVM_ID_CPU),
@@ -942,10 +939,7 @@ done:
     //       benchmarks to see if a two-pass approach would be faster (first
     //       pass pushes all GPU work asynchronously, second pass updates CPU
     //       mappings synchronously).
-    if (mm) {
-        uvm_up_read_mmap_lock_out_of_order(mm);
-        uvm_va_space_mm_or_current_release(va_space, mm);
-    }
+    uvm_up_read_mmap_lock_out_of_order(NULL);
 
     if (tracker_ptr) {
         // If requested, release semaphore
@@ -984,12 +978,11 @@ done:
     return status;
 }
 
-NV_STATUS uvm_api_migrate_range_group(UVM_MIGRATE_RANGE_GROUP_PARAMS *params, struct file *filp)
+NV_STATUS uvm_api_migrate_range_group(UVM_MIGRATE_RANGE_GROUP_PARAMS *params, uvm_fd filp)
 {
     NV_STATUS status = NV_OK;
     NV_STATUS tracker_status = NV_OK;
     uvm_va_space_t *va_space = uvm_va_space_get(filp);
-    struct mm_struct *mm;
     uvm_range_group_t *range_group;
     uvm_range_group_range_t *rgr;
     uvm_processor_id_t dest_id;
@@ -998,7 +991,6 @@ NV_STATUS uvm_api_migrate_range_group(UVM_MIGRATE_RANGE_GROUP_PARAMS *params, st
     uvm_gpu_t *gpu = NULL;
 
     // mmap_lock will be needed if we have to create CPU mappings
-    mm = uvm_va_space_mm_or_current_retain_lock(va_space);
     uvm_va_space_down_read(va_space);
 
     if (uvm_uuid_is_cpu(&params->destinationUuid)) {
@@ -1014,7 +1006,7 @@ NV_STATUS uvm_api_migrate_range_group(UVM_MIGRATE_RANGE_GROUP_PARAMS *params, st
         dest_id = gpu->id;
     }
 
-    range_group = radix_tree_lookup(&va_space->range_groups, params->rangeGroupId);
+    range_group = table_find(va_space->range_groups, pointer_from_u64(params->rangeGroupId));
     if (!range_group) {
         status = NV_ERR_OBJECT_NOT_FOUND;
         goto done;
@@ -1029,7 +1021,7 @@ NV_STATUS uvm_api_migrate_range_group(UVM_MIGRATE_RANGE_GROUP_PARAMS *params, st
         if (gpu && !uvm_gpu_can_address(gpu, start, length))
             status = NV_ERR_OUT_OF_RANGE;
         else
-            status = uvm_migrate(va_space, mm, start, length, dest_id, migrate_flags, &local_tracker);
+            status = uvm_migrate(va_space, NULL, start, length, dest_id, migrate_flags, &local_tracker);
 
         if (status != NV_OK)
             goto done;
@@ -1043,10 +1035,7 @@ done:
     //       benchmarks to see if a two-pass approach would be faster (first
     //       pass pushes all GPU work asynchronously, second pass updates CPU
     //       mappings synchronously).
-    if (mm) {
-        uvm_up_read_mmap_lock_out_of_order(mm);
-        uvm_va_space_mm_or_current_release(va_space, mm);
-    }
+    uvm_up_read_mmap_lock_out_of_order(NULL);
 
     tracker_status = uvm_tracker_wait_deinit(&local_tracker);
     uvm_va_space_up_read(va_space);

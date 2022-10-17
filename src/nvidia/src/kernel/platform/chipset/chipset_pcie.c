@@ -2227,7 +2227,7 @@ clStoreBusTopologyCache_IMPL
             for (func = 0; func < PCI_MAX_FUNCTION; func++)
             {
                 // read at bus, device, func
-                handle = osPciInitHandle(domain, (NvU8)bus, device, func, &vendorID, &deviceID);
+                handle = osPciAllocHandle(domain, (NvU8)bus, device, func, &vendorID, &deviceID);
                 if (!handle)
                 {
                     if (func == 0)
@@ -2303,8 +2303,10 @@ clStoreBusTopologyCache_IMPL
 
                 if (func == 0 && ((osPciReadByte(handle, 0xE)) & PCI_MULTIFUNCTION) == 0)
                 {
+                    osPciDeallocHandle(handle);
                     break;        // no need to cycle through functions
                 }
+                osPciDeallocHandle(handle);
             }
         }
     }

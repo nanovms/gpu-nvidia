@@ -171,7 +171,7 @@
 #include "uvm_va_space.h"
 #include "uvm_va_block.h"
 #include "uvm_test.h"
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 
 
 
@@ -192,7 +192,7 @@ module_param(uvm_perf_pma_batch_nonpinned_order, uint, S_IRUGO);
 typedef struct
 {
     // Cache for given split size
-    struct kmem_cache *cache;
+    heap cache;
 
     // Number of GPUs using given split size
     NvU32 refcount;
@@ -321,12 +321,12 @@ static NV_STATUS split_gpu_chunk(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk);
 static void free_chunk(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk);
 static void free_chunk_with_merges(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk);
 static bool free_next_available_root_chunk(uvm_pmm_gpu_t *pmm, uvm_pmm_gpu_memory_type_t type);
-static struct list_head *find_free_list(uvm_pmm_gpu_t *pmm,
+static struct list *find_free_list(uvm_pmm_gpu_t *pmm,
                                         uvm_pmm_gpu_memory_type_t type,
                                         uvm_chunk_size_t chunk_size,
                                         uvm_pmm_list_zero_t zero_type);
 static bool check_chunk(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk);
-static struct list_head *find_free_list_chunk(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk);
+static struct list *find_free_list_chunk(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk);
 static void chunk_free_locked(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk);
 
 static size_t root_chunk_index(uvm_pmm_gpu_t *pmm, uvm_gpu_root_chunk_t *root_chunk)
@@ -508,16 +508,15 @@ uvm_gpu_t *uvm_gpu_chunk_get_gpu(const uvm_gpu_chunk_t *chunk)
     return gpu;
 }
 
-struct page *uvm_gpu_chunk_to_page(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk)
+u64 uvm_gpu_chunk_to_page(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk)
 {
     uvm_gpu_t *gpu = uvm_pmm_to_gpu(pmm);
     NvU64 sys_addr = chunk->address + uvm_gpu_numa_info(gpu)->system_memory_window_start;
-    unsigned long pfn = sys_addr >> PAGE_SHIFT;
 
     UVM_ASSERT(sys_addr + uvm_gpu_chunk_get_size(chunk) <= uvm_gpu_numa_info(gpu)->system_memory_window_end + 1);
     UVM_ASSERT(gpu->parent->numa_info.enabled);
 
-    return pfn_to_page(pfn);
+    return sys_addr;
 }
 
 void uvm_pmm_gpu_sync(uvm_pmm_gpu_t *pmm)
@@ -642,7 +641,6 @@ NV_STATUS uvm_pmm_gpu_alloc_kernel(uvm_pmm_gpu_t *pmm,
                                    uvm_gpu_chunk_t **chunks,
                                    uvm_tracker_t *out_tracker)
 {
-    uvm_gpu_t *gpu = uvm_pmm_to_gpu(pmm);
     NV_STATUS status;
     size_t i;
     uvm_pmm_gpu_memory_type_t memory_type = UVM_PMM_GPU_MEMORY_TYPE_KERNEL;
@@ -1176,7 +1174,7 @@ size_t uvm_pmm_gpu_get_subchunks(uvm_pmm_gpu_t *pmm,
     return walk_args.num_written;
 }
 
-static uvm_gpu_chunk_t *list_first_chunk(struct list_head *list)
+static uvm_gpu_chunk_t *list_first_chunk(struct list *list)
 {
     return list_first_entry_or_null(list, uvm_gpu_chunk_t, list);
 }
@@ -1547,16 +1545,7 @@ static NV_STATUS find_and_retain_va_block_to_evict(uvm_pmm_gpu_t *pmm, uvm_gpu_c
 
 static bool root_chunk_has_elevated_page(uvm_pmm_gpu_t *pmm, uvm_gpu_root_chunk_t *root_chunk)
 {
-    uvm_gpu_t *gpu = uvm_pmm_to_gpu(pmm);
-    uvm_gpu_chunk_t *chunk = &root_chunk->chunk;
-    struct page *page;
-
-    if (!gpu->parent->numa_info.enabled)
-        return false;
-
-    page = uvm_gpu_chunk_to_page(pmm, chunk);
-
-    return page_count(page) > UVM_CHUNK_SIZE_MAX / PAGE_SIZE;
+    return false;
 }
 
 static NV_STATUS evict_root_chunk(uvm_pmm_gpu_t *pmm, uvm_gpu_root_chunk_t *root_chunk, uvm_pmm_context_t pmm_context)
@@ -1685,7 +1674,7 @@ static void chunk_start_eviction(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk)
     uvm_gpu_chunk_set_in_eviction(chunk, true);
 }
 
-static void root_chunk_update_eviction_list(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk, struct list_head *list)
+static void root_chunk_update_eviction_list(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk, struct list *list)
 {
     uvm_spin_lock(&pmm->list_lock);
 
@@ -1848,7 +1837,7 @@ static uvm_gpu_chunk_t *find_free_chunk_locked(uvm_pmm_gpu_t *pmm,
                                                uvm_chunk_size_t chunk_size,
                                                uvm_pmm_list_zero_t zero_type)
 {
-    struct list_head *free_list = find_free_list(pmm, type, chunk_size, zero_type);
+    struct list *free_list = find_free_list(pmm, type, chunk_size, zero_type);
     uvm_gpu_chunk_t *tmp, *chunk;
 
     uvm_assert_spinlock_locked(&pmm->list_lock);
@@ -2736,7 +2725,7 @@ bool free_next_available_root_chunk(uvm_pmm_gpu_t *pmm, uvm_pmm_gpu_memory_type_
 }
 
 // Get free list for the given chunk size and type
-struct list_head *find_free_list(uvm_pmm_gpu_t *pmm,
+struct list *find_free_list(uvm_pmm_gpu_t *pmm,
                                  uvm_pmm_gpu_memory_type_t type,
                                  uvm_chunk_size_t chunk_size,
                                  uvm_pmm_list_zero_t zero_type)
@@ -2748,7 +2737,7 @@ struct list_head *find_free_list(uvm_pmm_gpu_t *pmm,
     return &pmm->free_list[type][idx][zero_type];
 }
 
-struct list_head *find_free_list_chunk(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk)
+struct list *find_free_list_chunk(uvm_pmm_gpu_t *pmm, uvm_gpu_chunk_t *chunk)
 {
     return find_free_list(pmm,
                           chunk->type,
@@ -3377,7 +3366,7 @@ NV_STATUS uvm_pmm_gpu_init(uvm_pmm_gpu_t *pmm)
     // it's convenient to have it for uvm_test_pma_alloc_free().
     pmm->root_chunks.count = UVM_ALIGN_UP(gpu->mem_info.max_allocatable_address, UVM_CHUNK_SIZE_MAX) /
                              UVM_CHUNK_SIZE_MAX;
-    pmm->root_chunks.array = uvm_kvmalloc_zero(sizeof(*pmm->root_chunks.array) * pmm->root_chunks.count);
+    pmm->root_chunks.array = kzalloc(sizeof(*pmm->root_chunks.array) * pmm->root_chunks.count, 0);
     if (!pmm->root_chunks.array) {
         status = NV_ERR_NO_MEMORY;
         goto cleanup;
@@ -3482,355 +3471,9 @@ void uvm_pmm_gpu_deinit(uvm_pmm_gpu_t *pmm)
                            uvm_gpu_name(gpu));
         }
     }
-    uvm_kvfree(pmm->root_chunks.array);
+    NV_KFREE(pmm->root_chunks.array, sizeof(*pmm->root_chunks.array) * pmm->root_chunks.count);
 
     deinit_caches(pmm);
 
     pmm->initialized = false;
-}
-
-NV_STATUS uvm_test_evict_chunk(UVM_TEST_EVICT_CHUNK_PARAMS *params, struct file *filp)
-{
-    NV_STATUS status = NV_OK;
-    uvm_gpu_t *gpu;
-    uvm_va_space_t *va_space = uvm_va_space_get(filp);
-    uvm_va_block_t *block = NULL;
-    uvm_gpu_root_chunk_t *root_chunk = NULL;
-    uvm_pmm_gpu_t *pmm;
-    struct mm_struct *mm;
-
-    params->chunk_was_evicted = NV_FALSE;
-    params->evicted_physical_address = 0;
-    params->chunk_size_backing_virtual = 0;
-
-    mm = uvm_va_space_mm_retain_lock(va_space);
-    uvm_va_space_down_read(va_space);
-
-    gpu = uvm_va_space_get_gpu_by_uuid(va_space, &params->gpu_uuid);
-    if (!gpu || !uvm_gpu_supports_eviction(gpu)) {
-        uvm_va_space_up_read(va_space);
-        return NV_ERR_INVALID_DEVICE;
-    }
-    pmm = &gpu->pmm;
-
-    // Retain the GPU before unlocking the VA space so that it sticks around.
-    uvm_gpu_retain(gpu);
-
-    // For virtual mode, look up and retain the block first so that eviction can
-    // be started without the VA space lock held.
-    if (params->eviction_mode == UvmTestEvictModeVirtual) {
-        status = uvm_va_block_find_create(va_space, mm, params->address, NULL, &block);
-        if (status != NV_OK) {
-            uvm_va_space_up_read(va_space);
-            uvm_va_space_mm_release_unlock(va_space, mm);
-            goto out;
-        }
-
-        // Retain the block before unlocking the VA space lock so that we can
-        // safely access it later.
-        uvm_va_block_retain(block);
-    }
-
-    // Unlock the VA space to emulate real eviction better where a VA space lock
-    // may not be held or may be held for a different VA space.
-    uvm_va_space_up_read(va_space);
-    uvm_va_space_mm_release_unlock(va_space, mm);
-
-    if (params->eviction_mode == UvmTestEvictModeVirtual) {
-        UVM_ASSERT(block);
-
-        uvm_mutex_lock(&block->lock);
-
-        // As the VA space lock is not held we need to make sure the block
-        // is still alive.
-        if (!uvm_va_block_is_dead(block)) {
-            // The block might have been split in the meantime and may no longer
-            // cover the address as a result.
-            if (params->address >= block->start && params->address <= block->end) {
-                uvm_gpu_chunk_t *chunk = uvm_va_block_lookup_gpu_chunk(block, gpu, params->address);
-
-                uvm_spin_lock(&pmm->list_lock);
-                if (chunk && chunk_is_evictable(pmm, chunk)) {
-                    chunk_start_eviction(pmm, chunk);
-                    root_chunk = root_chunk_from_chunk(pmm, chunk);
-                    params->chunk_size_backing_virtual = uvm_gpu_chunk_get_size(chunk);
-                }
-                uvm_spin_unlock(&pmm->list_lock);
-            }
-        }
-        else {
-            // Consider it an error to free the block before the eviction ioctl
-            // is done.
-            status = NV_ERR_INVALID_ADDRESS;
-        }
-
-        uvm_mutex_unlock(&block->lock);
-        uvm_va_block_release(block);
-
-        if (status != NV_OK)
-            goto out;
-    }
-    else if (params->eviction_mode == UvmTestEvictModePhysical) {
-        uvm_gpu_chunk_t *chunk;
-        size_t index = params->address / UVM_CHUNK_SIZE_MAX;
-
-        if (index >= pmm->root_chunks.count) {
-            status = NV_ERR_INVALID_ADDRESS;
-            goto out;
-        }
-
-        root_chunk = &pmm->root_chunks.array[index];
-        chunk = &root_chunk->chunk;
-
-        uvm_spin_lock(&pmm->list_lock);
-
-        if (chunk_is_evictable(pmm, chunk))
-            chunk_start_eviction(pmm, chunk);
-        else
-            chunk = NULL;
-
-        uvm_spin_unlock(&pmm->list_lock);
-
-        if (!chunk)
-            root_chunk = NULL;
-    }
-    else if (params->eviction_mode == UvmTestEvictModeDefault) {
-        root_chunk = pick_root_chunk_to_evict(pmm);
-    }
-    else {
-        UVM_DBG_PRINT("Invalid eviction mode: 0x%x\n", params->eviction_mode);
-        status = NV_ERR_INVALID_ARGUMENT;
-        goto out;
-    }
-
-    if (!root_chunk) {
-        // Not finding a chunk to evict is not considered an error, the caller
-        // can inspect the targeted_chunk_size to see whether anything was evicted.
-        goto out;
-    }
-
-    uvm_mutex_lock(&pmm->lock);
-    status = evict_root_chunk(pmm, root_chunk, PMM_CONTEXT_DEFAULT);
-    uvm_mutex_unlock(&pmm->lock);
-
-    if (status != NV_OK)
-        goto out;
-
-    params->chunk_was_evicted = NV_TRUE;
-    params->evicted_physical_address = root_chunk->chunk.address;
-    free_chunk(pmm, &root_chunk->chunk);
-
-out:
-    uvm_gpu_release(gpu);
-    return status;
-}
-
-static NV_STATUS test_check_pma_allocated_chunks(uvm_pmm_gpu_t *pmm,
-                                                 UVM_TEST_PMA_ALLOC_FREE_PARAMS *params,
-                                                 NvU64 *pages)
-{
-    NV_STATUS status = NV_OK;
-    NvU32 i;
-
-    for (i = 0; i < params->num_pages; ++i) {
-        uvm_gpu_root_chunk_t *root_chunk;
-        NvU64 address;
-        if (params->contiguous)
-            address = pages[0] + ((NvU64)params->page_size) * i;
-        else
-            address = pages[i];
-
-        root_chunk = root_chunk_from_address(pmm, address);
-
-        if (!IS_ALIGNED(address, params->page_size)) {
-            UVM_TEST_PRINT("Returned unaligned address 0x%llx page size %u\n", address, params->page_size);
-            status = NV_ERR_INVALID_STATE;
-        }
-
-        // The chunk should still be in the PMA owned state
-        uvm_spin_lock(&pmm->list_lock);
-        if (root_chunk->chunk.state != UVM_PMM_GPU_CHUNK_STATE_PMA_OWNED) {
-            UVM_TEST_PRINT("Root chunk 0x%llx invalid state: %s, allocated [0x%llx, 0x%llx)\n",
-                           root_chunk->chunk.address,
-                           uvm_pmm_gpu_chunk_state_string(root_chunk->chunk.state),
-                           address, address + params->page_size);
-            status = NV_ERR_INVALID_STATE;
-        }
-        uvm_spin_unlock(&pmm->list_lock);
-    }
-    return status;
-}
-
-NV_STATUS uvm_test_pma_alloc_free(UVM_TEST_PMA_ALLOC_FREE_PARAMS *params, struct file *filp)
-{
-    NV_STATUS status = NV_OK;
-    uvm_gpu_t *gpu;
-    uvm_pmm_gpu_t *pmm;
-    NvU64 page;
-    NvU64 *pages = NULL;
-    NvU32 free_flags;
-    UvmPmaAllocationOptions options = {0};
-    uvm_va_space_t *va_space = uvm_va_space_get(filp);
-
-    gpu = uvm_va_space_retain_gpu_by_uuid(va_space, &params->gpu_uuid);
-    if (!gpu)
-        return NV_ERR_INVALID_DEVICE;
-
-    pmm = &gpu->pmm;
-
-    options.flags = UVM_PMA_ALLOCATE_PINNED;
-    if (params->contiguous) {
-        options.flags |= UVM_PMA_ALLOCATE_CONTIGUOUS;
-        pages = &page;
-    }
-    else {
-        pages = uvm_kvmalloc(sizeof(*pages) * params->num_pages);
-        if (!pages) {
-            status = NV_ERR_NO_MEMORY;
-            goto out;
-        }
-    }
-    if (params->phys_begin != 0 || params->phys_end != 0) {
-        options.physBegin = params->phys_begin;
-        options.physEnd = params->phys_end;
-        options.flags |= UVM_PMA_ALLOCATE_SPECIFY_ADDRESS_RANGE;
-    }
-
-    status = nvUvmInterfacePmaAllocPages(pmm->pma, params->num_pages, params->page_size, &options, pages);
-    if (status != NV_OK)
-        goto out;
-
-    status = test_check_pma_allocated_chunks(pmm, params, pages);
-    if (status != NV_OK) {
-        UVM_TEST_PRINT("Failed before the nap\n");
-        goto free;
-    }
-
-    if (params->nap_us_before_free)
-        usleep_range(params->nap_us_before_free, params->nap_us_before_free + 10);
-
-    status = test_check_pma_allocated_chunks(pmm, params, pages);
-    if (status != NV_OK)
-        UVM_TEST_PRINT("Failed after the nap\n");
-
-free:
-    free_flags = options.flags;
-
-    if (!!(options.resultFlags & UVM_PMA_ALLOCATE_RESULT_IS_ZERO))
-        free_flags |= UVM_PMA_FREE_IS_ZERO;
-
-    nvUvmInterfacePmaFreePages(gpu->pmm.pma, pages, params->num_pages, params->page_size, free_flags);
-
-out:
-    if (!params->contiguous)
-        uvm_kvfree(pages);
-
-    uvm_gpu_release(gpu);
-    return status;
-}
-
-NV_STATUS uvm_test_pmm_alloc_free_root(UVM_TEST_PMM_ALLOC_FREE_ROOT_PARAMS *params, struct file *filp)
-{
-    NV_STATUS status = NV_OK;
-    uvm_gpu_t *gpu;
-    uvm_pmm_gpu_t *pmm;
-    uvm_gpu_chunk_t *chunk;
-    uvm_tracker_t tracker = UVM_TRACKER_INIT();
-    uvm_va_space_t *va_space = uvm_va_space_get(filp);
-
-    gpu = uvm_va_space_retain_gpu_by_uuid(va_space, &params->gpu_uuid);
-    if (!gpu)
-        return NV_ERR_INVALID_DEVICE;
-
-    pmm = &gpu->pmm;
-
-    status = uvm_pmm_gpu_alloc_user(pmm,
-                                    1,
-                                    UVM_CHUNK_SIZE_MAX,
-                                    UVM_PMM_ALLOC_FLAGS_EVICT | UVM_PMM_ALLOC_FLAGS_DONT_BATCH,
-                                    &chunk,
-                                    &tracker);
-
-    if (status != NV_OK)
-        goto out;
-
-    if (params->nap_us_before_free)
-        usleep_range(params->nap_us_before_free, params->nap_us_before_free + 10);
-
-    uvm_pmm_gpu_free(pmm, chunk, NULL);
-    uvm_tracker_deinit(&tracker);
-
-out:
-    uvm_gpu_release(gpu);
-    return status;
-}
-
-NV_STATUS uvm_test_pmm_inject_pma_evict_error(UVM_TEST_PMM_INJECT_PMA_EVICT_ERROR_PARAMS *params, struct file *filp)
-{
-    uvm_gpu_t *gpu;
-    uvm_pmm_gpu_t *pmm;
-    uvm_va_space_t *va_space = uvm_va_space_get(filp);
-
-    gpu = uvm_va_space_retain_gpu_by_uuid(va_space, &params->gpu_uuid);
-    if (!gpu)
-        return NV_ERR_INVALID_DEVICE;
-
-    pmm = &gpu->pmm;
-
-    uvm_mutex_lock(&pmm->lock);
-    pmm->inject_pma_evict_error_after_num_chunks = params->error_after_num_chunks;
-    uvm_mutex_unlock(&pmm->lock);
-
-    uvm_gpu_release(gpu);
-    return NV_OK;
-}
-
-NV_STATUS uvm_test_pmm_release_free_root_chunks(UVM_TEST_PMM_RELEASE_FREE_ROOT_CHUNKS_PARAMS *params,
-                                                 struct file *filp)
-{
-    uvm_gpu_t *gpu;
-    uvm_va_space_t *va_space = uvm_va_space_get(filp);
-
-    gpu = uvm_va_space_retain_gpu_by_uuid(va_space, &params->gpu_uuid);
-    if (!gpu)
-        return NV_ERR_INVALID_DEVICE;
-
-    release_free_root_chunks(&gpu->pmm);
-
-    uvm_gpu_release(gpu);
-    return NV_OK;
-}
-
-NV_STATUS uvm_test_pma_get_batch_size(UVM_TEST_PMA_GET_BATCH_SIZE_PARAMS *params, struct file *filp)
-{
-    uvm_gpu_t *gpu;
-    uvm_va_space_t *va_space = uvm_va_space_get(filp);
-
-    gpu = uvm_va_space_retain_gpu_by_uuid(va_space, &params->gpu_uuid);
-    if (!gpu)
-        return NV_ERR_INVALID_DEVICE;
-
-    if (gpu->parent->rm_info.isSimulated)
-        params->pma_batch_size = UVM_CHUNK_SIZE_MAX;
-    else
-        params->pma_batch_size = (1 << uvm_perf_pma_batch_nonpinned_order) * UVM_CHUNK_SIZE_MAX;
-
-    uvm_gpu_release(gpu);
-    return NV_OK;
-}
-
-NV_STATUS uvm_test_pmm_query_pma_stats(UVM_TEST_PMM_QUERY_PMA_STATS_PARAMS *params, struct file *filp)
-{
-    uvm_gpu_t *gpu;
-    uvm_va_space_t *va_space = uvm_va_space_get(filp);
-
-    gpu = uvm_va_space_retain_gpu_by_uuid(va_space, &params->gpu_uuid);
-    if (!gpu)
-        return NV_ERR_INVALID_DEVICE;
-
-    params->pma_stats.numFreePages64k = UVM_READ_ONCE(gpu->pmm.pma_stats->numFreePages64k);
-    params->pma_stats.numFreePages2m = UVM_READ_ONCE(gpu->pmm.pma_stats->numFreePages2m);
-
-    uvm_gpu_release(gpu);
-    return NV_OK;
 }

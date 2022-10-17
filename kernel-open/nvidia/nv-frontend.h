@@ -25,7 +25,7 @@
 #define _NV_FRONTEND_H_
 
 #include "nvtypes.h"
-#include "nv-linux.h"
+#include "nv-nanos.h"
 #include "nv-register-module.h"
 
 #define NV_MAX_MODULE_INSTANCES                 8
@@ -39,8 +39,8 @@
 #define NV_FRONTEND_IS_CONTROL_DEVICE(x)        ((x <= NV_FRONTEND_CONTROL_DEVICE_MINOR_MAX) && \
                                                  (x > NV_FRONTEND_CONTROL_DEVICE_MINOR_MIN))
 
-int nvidia_frontend_add_device(nvidia_module_t *, nv_linux_state_t *);
-int nvidia_frontend_remove_device(nvidia_module_t *, nv_linux_state_t *);
+int nvidia_frontend_add_device(nvidia_module_t *, nv_nanos_state_t *);
+int nvidia_frontend_remove_device(nvidia_module_t *, nv_nanos_state_t *);
 
 extern nvidia_module_t *nv_minor_num_table[];
 

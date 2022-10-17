@@ -24,13 +24,13 @@
 #define  __NO_VERSION__
 
 #include "os-interface.h"
-#include "nv-linux.h"
+#include "nv-nanos.h"
 
 NvU64 NV_API_CALL nv_get_kern_phys_address(NvU64 address)
 {
     /* direct-mapped kernel address */
-    if (virt_addr_valid(address))
-        return __pa(address);
+    if ((address >= LINEAR_BACKED_BASE) && (address < KERNEL_LIMIT))
+        return physical_from_virtual(pointer_from_u64(address));
 
     nv_printf(NV_DBG_ERRORS,
         "NVRM: can't translate address in %s()!\n", __FUNCTION__);

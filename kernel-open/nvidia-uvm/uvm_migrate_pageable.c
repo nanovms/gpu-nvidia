@@ -22,7 +22,7 @@
 *******************************************************************************/
 
 #include "uvm_common.h"
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_gpu.h"
 #include "uvm_lock.h"
 #include "uvm_va_space.h"

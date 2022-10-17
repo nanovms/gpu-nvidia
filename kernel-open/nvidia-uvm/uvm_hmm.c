@@ -23,6 +23,8 @@
 
 #include "uvm_hmm.h"
 
+#if UVM_IS_CONFIG_HMM()
+
 static bool uvm_disable_hmm = false;
 module_param(uvm_disable_hmm, bool, 0444);
 MODULE_PARM_DESC(uvm_disable_hmm,
@@ -31,8 +33,6 @@ MODULE_PARM_DESC(uvm_disable_hmm,
                  "HMM is not supported in the driver, or if ATS settings "
                  "conflict with HMM.");
 
-
-#if UVM_IS_CONFIG_HMM()
 
 #include <linux/hmm.h>
 #include <linux/userfaultfd_k.h>

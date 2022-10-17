@@ -25,7 +25,7 @@
 #define __UVM_LOCK_H__
 
 #include "uvm_forward_decl.h"
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_common.h"
 
 // --------------------------- UVM Locking Order ---------------------------- //
@@ -585,7 +585,7 @@ bool __uvm_locking_initialized(void);
 // and recording its usage
 #define uvm_assert_mmap_lock_locked_mode(mm, flags) ({                                      \
       typeof(mm) _mm = (mm);                                                                \
-      UVM_ASSERT(nv_mm_rwsem_is_locked(_mm) && uvm_check_locked_mmap_lock((_mm), (flags))); \
+      UVM_ASSERT(uvm_check_locked_mmap_lock((_mm), (flags)));                               \
   })
 
 #define uvm_assert_mmap_lock_locked(mm) \
@@ -598,18 +598,15 @@ bool __uvm_locking_initialized(void);
 #define uvm_down_read_mmap_lock(mm) ({                  \
         typeof(mm) _mm = (mm);                          \
         uvm_record_lock_mmap_lock_read(_mm);            \
-        nv_mmap_read_lock(_mm);                         \
     })
 
 #define uvm_up_read_mmap_lock(mm) ({                    \
         typeof(mm) _mm = (mm);                          \
-        nv_mmap_read_unlock(_mm);                       \
         uvm_record_unlock_mmap_lock_read(_mm);          \
     })
 
 #define uvm_up_read_mmap_lock_out_of_order(mm) ({           \
         typeof(mm) _mm = (mm);                              \
-        nv_mmap_read_unlock(_mm);                           \
         uvm_record_unlock_mmap_lock_read_out_of_order(_mm); \
     })
 
@@ -643,7 +640,7 @@ bool __uvm_locking_initialized(void);
 
 typedef struct
 {
-    struct rw_semaphore sem;
+    struct rw_spinlock sem;
 #if UVM_IS_DEBUG()
     uvm_lock_order_t lock_order;
 #endif
@@ -659,7 +656,7 @@ typedef struct
 //
 #define uvm_assert_rwsem_locked_mode(uvm_sem, flags) ({                               \
         typeof(uvm_sem) _sem_ = (uvm_sem);                                            \
-        UVM_ASSERT(rwsem_is_locked(&_sem_->sem) && uvm_check_locked(_sem_, (flags))); \
+        UVM_ASSERT((_sem_->sem.l.w != 0) && uvm_check_locked(_sem_, (flags)));        \
     })
 
 #define uvm_assert_rwsem_locked(uvm_sem) \
@@ -669,11 +666,11 @@ typedef struct
 #define uvm_assert_rwsem_locked_write(uvm_sem) \
         uvm_assert_rwsem_locked_mode(uvm_sem, UVM_LOCK_FLAGS_MODE_EXCLUSIVE)
 
-#define uvm_assert_rwsem_unlocked(uvm_sem) UVM_ASSERT(!rwsem_is_locked(&(uvm_sem)->sem))
+#define uvm_assert_rwsem_unlocked(uvm_sem) UVM_ASSERT((uvm_sem)->sem.l.w == 0)
 
 static void uvm_init_rwsem(uvm_rw_semaphore_t *uvm_sem, uvm_lock_order_t lock_order)
 {
-    init_rwsem(&uvm_sem->sem);
+    spin_rw_lock_init(&uvm_sem->sem);
 #if UVM_IS_DEBUG()
     uvm_locking_assert_initialized();
     uvm_sem->lock_order = lock_order;
@@ -684,14 +681,14 @@ static void uvm_init_rwsem(uvm_rw_semaphore_t *uvm_sem, uvm_lock_order_t lock_or
 #define uvm_down_read(uvm_sem) ({                          \
         typeof(uvm_sem) _sem = (uvm_sem);                  \
         uvm_record_lock(_sem, UVM_LOCK_FLAGS_MODE_SHARED); \
-        down_read(&_sem->sem);                             \
+        spin_rlock(&_sem->sem);                            \
         uvm_assert_rwsem_locked_read(_sem);                \
     })
 
 #define uvm_up_read(uvm_sem) ({                              \
         typeof(uvm_sem) _sem = (uvm_sem);                    \
         uvm_assert_rwsem_locked_read(_sem);                  \
-        up_read(&_sem->sem);                                 \
+        spin_runlock(&_sem->sem);                            \
         uvm_record_unlock(_sem, UVM_LOCK_FLAGS_MODE_SHARED); \
     })
 
@@ -708,7 +705,7 @@ static void uvm_init_rwsem(uvm_rw_semaphore_t *uvm_sem, uvm_lock_order_t lock_or
 #define uvm_down_write(uvm_sem) ({                            \
         typeof (uvm_sem) _sem = (uvm_sem);                    \
         uvm_record_lock(_sem, UVM_LOCK_FLAGS_MODE_EXCLUSIVE); \
-        down_write(&_sem->sem);                               \
+        spin_wlock(&_sem->sem);                               \
         uvm_assert_rwsem_locked_write(_sem);                  \
     })
 
@@ -759,14 +756,15 @@ static void uvm_init_rwsem(uvm_rw_semaphore_t *uvm_sem, uvm_lock_order_t lock_or
 #define uvm_up_write(uvm_sem) ({                                \
         typeof(uvm_sem) _sem = (uvm_sem);                       \
         uvm_assert_rwsem_locked_write(_sem);                    \
-        up_write(&_sem->sem);                                   \
+        spin_wunlock(&_sem->sem);                               \
         uvm_record_unlock(_sem, UVM_LOCK_FLAGS_MODE_EXCLUSIVE); \
     })
 
 #define uvm_downgrade_write(uvm_sem) ({                 \
         typeof(uvm_sem) _sem = (uvm_sem);               \
         uvm_assert_rwsem_locked_write(_sem);            \
-        downgrade_write(&_sem->sem);                    \
+        fetch_and_add(&_sem->sem.readers, 1);           \
+        spin_wunlock(&_sem->sem);                       \
         uvm_record_downgrade(_sem);                     \
     })
 
@@ -804,12 +802,12 @@ typedef struct
 //       enough.
 //
 #define uvm_assert_mutex_interrupts() ({                                                                        \
-        UVM_ASSERT_MSG(!irqs_disabled() && !in_interrupt(), "Mutexes cannot be used with interrupts disabled"); \
+        UVM_ASSERT_MSG(!in_interrupt(), "Mutexes cannot be used in interrupt context"); \
     })
 
 static void uvm_mutex_init(uvm_mutex_t *mutex, uvm_lock_order_t lock_order)
 {
-    mutex_init(&mutex->m);
+    mutex_init(&mutex->m, 0);
 #if UVM_IS_DEBUG()
     uvm_locking_assert_initialized();
     mutex->lock_order = lock_order;
@@ -939,10 +937,10 @@ typedef struct
 //
 #define uvm_assert_spinlock_locked(spinlock) ({                                                               \
         typeof(spinlock) _lock_ = (spinlock);                                                                 \
-        UVM_ASSERT(spin_is_locked(&_lock_->lock) && uvm_check_locked(_lock_, UVM_LOCK_FLAGS_MODE_EXCLUSIVE)); \
+        UVM_ASSERT((_lock_->lock.w != 0) && uvm_check_locked(_lock_, UVM_LOCK_FLAGS_MODE_EXCLUSIVE));         \
     })
 
-#define uvm_assert_spinlock_unlocked(spinlock) UVM_ASSERT(!spin_is_locked(&(spinlock)->lock))
+#define uvm_assert_spinlock_unlocked(spinlock) UVM_ASSERT((spinlock)->lock.w == 0)
 
 static void uvm_spin_lock_init(uvm_spinlock_t *spinlock, uvm_lock_order_t lock_order)
 {
@@ -1000,7 +998,7 @@ static void uvm_spin_lock_irqsave_init(uvm_spinlock_irqsave_t *spinlock, uvm_loc
 // Wrapper for a reader-writer spinlock that disables and enables interrupts
 typedef struct
 {
-    rwlock_t lock;
+    struct rw_spinlock lock;
 
     // This flags variable is only used by writers, since concurrent readers may
     // have different values.
@@ -1053,7 +1051,7 @@ static void uvm_rwlock_irqsave_dec(uvm_rwlock_irqsave_t *rwlock)
 
 static void uvm_rwlock_irqsave_init(uvm_rwlock_irqsave_t *rwlock, uvm_lock_order_t lock_order)
 {
-    rwlock_init(&rwlock->lock);
+    spin_rw_lock_init(&rwlock->lock);
 #if UVM_IS_DEBUG()
     uvm_locking_assert_initialized();
     rwlock->lock_order = lock_order;

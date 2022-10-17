@@ -185,7 +185,7 @@ struct uvm_mem_struct
             // GPU can physical access the memory
             uvm_global_processor_mask_t mapped_on_phys;
 
-            struct page **pages;
+            u64 *pages;
             void **va;
 
             // Per GPU IOMMU mappings of the pages
@@ -272,7 +272,7 @@ NV_STATUS uvm_mem_map_gpu_user(uvm_mem_t *mem,
                                const uvm_mem_gpu_mapping_attrs_t *attrs);
 NV_STATUS uvm_mem_map_cpu_user(uvm_mem_t *mem,
                                uvm_va_space_t *user_va_space,
-                               struct vm_area_struct *vma);
+                               void *user_addr);
 void uvm_mem_unmap_gpu_user(uvm_mem_t *mem, uvm_gpu_t *gpu);
 void uvm_mem_unmap_cpu_user(uvm_mem_t *mem);
 

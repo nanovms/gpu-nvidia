@@ -37,7 +37,6 @@
 #include "uvm_gpu_access_counters.h"
 #include "uvm_hmm.h"
 #include "uvm_va_space_mm.h"
-#include "uvm_test.h"
 #include "uvm_common.h"
 #include "nv_uvm_interface.h"
 #include "nv-kthread-q.h"
@@ -72,10 +71,10 @@ static NV_STATUS enable_peers(uvm_va_space_t *va_space, uvm_gpu_t *gpu0, uvm_gpu
 static void disable_peers(uvm_va_space_t *va_space,
                           uvm_gpu_t *gpu0,
                           uvm_gpu_t *gpu1,
-                          struct list_head *deferred_free_list);
+                          struct list *deferred_free_list);
 static void remove_gpu_va_space(uvm_gpu_va_space_t *gpu_va_space,
                                 struct mm_struct *mm,
-                                struct list_head *deferred_free_list);
+                                struct list *deferred_free_list);
 static void va_space_remove_dummy_thread_contexts(uvm_va_space_t *va_space);
 
 static void init_tools_data(uvm_va_space_t *va_space)
@@ -160,7 +159,7 @@ static bool va_space_check_processors_masks(uvm_va_space_t *va_space)
     return true;
 }
 
-NV_STATUS uvm_va_space_create(struct inode *inode, struct file *filp)
+NV_STATUS uvm_va_space_create(uvm_fd fd)
 {
     NV_STATUS status;
     uvm_va_space_t *va_space = uvm_kvmalloc_zero(sizeof(*va_space));
@@ -177,25 +176,6 @@ NV_STATUS uvm_va_space_create(struct inode *inode, struct file *filp)
     uvm_range_tree_init(&va_space->va_range_tree);
     uvm_ats_init_va_space(va_space);
 
-    // By default all struct files on the same inode share the same
-    // address_space structure (the inode's) across all processes. This means
-    // unmap_mapping_range would unmap virtual mappings across all processes on
-    // that inode.
-    //
-    // Since the UVM driver uses the mapping offset as the VA of the file's
-    // process, we need to isolate the mappings to each process.
-    address_space_init_once(&va_space->mapping);
-    va_space->mapping.host = inode;
-
-    // Some paths in the kernel, for example force_page_cache_readahead which
-    // can be invoked from user-space via madvise MADV_WILLNEED and fadvise
-    // POSIX_FADV_WILLNEED, check the function pointers within
-    // file->f_mapping->a_ops for validity. However, those paths assume that a_ops
-    // itself is always valid. Handle that by using the inode's a_ops pointer,
-    // which is what f_mapping->a_ops would point to anyway if we weren't re-
-    // assigning f_mapping.
-    va_space->mapping.a_ops = inode->i_mapping->a_ops;
-
 #if defined(NV_ADDRESS_SPACE_HAS_BACKING_DEV_INFO)
     va_space->mapping.backing_dev_info = inode->i_mapping->backing_dev_info;
 #endif
@@ -203,7 +183,12 @@ NV_STATUS uvm_va_space_create(struct inode *inode, struct file *filp)
     // Init to 0 since we rely on atomic_inc_return behavior to return 1 as the first ID
     atomic64_set(&va_space->range_group_id_counter, 0);
 
-    INIT_RADIX_TREE(&va_space->range_groups, NV_UVM_GFP_FLAGS);
+    va_space->range_groups = allocate_table(heap_locked(get_kernel_heaps()), identity_key,
+                                            pointer_equal);
+    if (va_space->range_groups == INVALID_ADDRESS) {
+        status = NV_ERR_NO_MEMORY;
+        goto table_fail;
+    }
     uvm_range_tree_init(&va_space->range_group_ranges);
 
     bitmap_zero(va_space->enabled_peers, UVM_MAX_UNIQUE_GPU_PAIRS);
@@ -228,11 +213,7 @@ NV_STATUS uvm_va_space_create(struct inode *inode, struct file *filp)
         uvm_processor_mask_zero(&affinity->gpus);
     }
 
-    init_waitqueue_head(&va_space->va_space_mm.last_retainer_wait_queue);
-    init_waitqueue_head(&va_space->gpu_va_space_deferred_free.wait_queue);
-
-    filp->private_data = va_space;
-    filp->f_mapping = &va_space->mapping;
+    fd->va_space = va_space;
 
     va_space->test.page_prefetch_enabled = true;
 
@@ -266,7 +247,9 @@ fail:
     uvm_perf_heuristics_unload(va_space);
     uvm_perf_destroy_va_space_events(&va_space->perf_events);
     uvm_va_space_up_write(va_space);
+    deallocate_table(va_space->range_groups);
 
+table_fail:
     uvm_kvfree(va_space);
 
     return status;
@@ -277,7 +260,7 @@ fail:
 static void unregister_gpu(uvm_va_space_t *va_space,
                            uvm_gpu_t *gpu,
                            struct mm_struct *mm,
-                           struct list_head *deferred_free_list,
+                           struct list *deferred_free_list,
                            uvm_global_processor_mask_t *peers_to_release)
 {
     uvm_gpu_t *peer_gpu;
@@ -395,14 +378,14 @@ static void gpu_va_space_stop_all_channels(uvm_gpu_va_space_t *gpu_va_space)
 // drop the VA space lock and call uvm_deferred_free_object_list to complete the
 // destroy operation.
 static void uvm_gpu_va_space_detach_all_user_channels(uvm_gpu_va_space_t *gpu_va_space,
-                                                      struct list_head *deferred_free_list)
+                                                      struct list *deferred_free_list)
 {
     uvm_user_channel_t *user_channel, *next_channel;
     list_for_each_entry_safe(user_channel, next_channel, &gpu_va_space->registered_channels, list_node)
         uvm_user_channel_detach(user_channel, deferred_free_list);
 }
 
-void uvm_va_space_detach_all_user_channels(uvm_va_space_t *va_space, struct list_head *deferred_free_list)
+void uvm_va_space_detach_all_user_channels(uvm_va_space_t *va_space, struct list *deferred_free_list)
 {
     uvm_gpu_va_space_t *gpu_va_space;
     for_each_gpu_va_space(gpu_va_space, va_space)
@@ -567,6 +550,7 @@ void uvm_va_space_destroy(uvm_va_space_t *va_space)
 
     uvm_mutex_unlock(&g_uvm_global.global_lock);
 
+    deallocate_table(va_space->range_groups);
     uvm_kvfree(va_space);
 }
 
@@ -577,7 +561,6 @@ NV_STATUS uvm_va_space_initialize(uvm_va_space_t *va_space, NvU64 flags)
     if (flags & ~UVM_INIT_FLAGS_MASK)
         return NV_ERR_INVALID_ARGUMENT;
 
-    uvm_down_write_mmap_lock(current->mm);
     uvm_va_space_down_write(va_space);
 
     if (atomic_read(&va_space->initialized)) {
@@ -604,12 +587,10 @@ NV_STATUS uvm_va_space_initialize(uvm_va_space_t *va_space, NvU64 flags)
 
 out:
     uvm_va_space_up_write(va_space);
-    uvm_up_write_mmap_lock(current->mm);
     return status;
 
 unreg:
     uvm_va_space_up_write(va_space);
-    uvm_up_write_mmap_lock(current->mm);
     // See the comment in uvm_va_space_mm_unregister() for why this has to be
     // called after releasing the locks.
     uvm_va_space_mm_unregister(va_space);
@@ -887,7 +868,6 @@ NV_STATUS uvm_va_space_unregister_gpu(uvm_va_space_t *va_space, const NvProcesso
 {
     uvm_gpu_t *gpu;
     uvm_gpu_va_space_t *gpu_va_space;
-    struct mm_struct *mm;
     uvm_global_gpu_id_t peer_gpu_id;
     uvm_global_processor_mask_t peers_to_release;
     LIST_HEAD(deferred_free_list);
@@ -937,10 +917,6 @@ NV_STATUS uvm_va_space_unregister_gpu(uvm_va_space_t *va_space, const NvProcesso
     if (gpu->parent->access_counters_supported)
         uvm_gpu_access_counters_disable(gpu, va_space);
 
-    // mmap_lock is needed to establish CPU mappings to any pages evicted from
-    // the GPU if accessed by CPU is set for them.
-    mm = uvm_va_space_mm_or_current_retain_lock(va_space);
-
     uvm_va_space_down_write(va_space);
 
     // We blocked out other GPU unregisters, so this GPU must still be
@@ -950,13 +926,12 @@ NV_STATUS uvm_va_space_unregister_gpu(uvm_va_space_t *va_space, const NvProcesso
         UVM_ASSERT(uvm_gpu_va_space_get(va_space, gpu) == gpu_va_space);
 
     // This will call disable_peers for all GPU's peers, including NVLink
-    unregister_gpu(va_space, gpu, mm, &deferred_free_list, &peers_to_release);
+    unregister_gpu(va_space, gpu, NULL, &deferred_free_list, &peers_to_release);
 
     UVM_ASSERT(uvm_processor_mask_test(&va_space->gpu_unregister_in_progress, gpu->id));
     uvm_processor_mask_clear(&va_space->gpu_unregister_in_progress, gpu->id);
 
     uvm_va_space_up_write(va_space);
-    uvm_va_space_mm_or_current_release_unlock(va_space, mm);
 
     uvm_deferred_free_object_list(&deferred_free_list);
 
@@ -982,7 +957,7 @@ NV_STATUS uvm_va_space_unregister_gpu(uvm_va_space_t *va_space, const NvProcesso
 static void disable_peers(uvm_va_space_t *va_space,
                           uvm_gpu_t *gpu0,
                           uvm_gpu_t *gpu1,
-                          struct list_head *deferred_free_list)
+                          struct list *deferred_free_list)
 {
     NvU32 table_index;
     uvm_va_range_t *va_range;
@@ -1155,32 +1130,6 @@ void uvm_gpu_va_space_release(uvm_gpu_va_space_t *gpu_va_space)
         nv_kref_put(&gpu_va_space->kref, free_gpu_va_space);
 }
 
-static void uvm_gpu_va_space_acquire_mmap_lock(struct mm_struct *mm)
-{
-    if (mm) {
-        // uvm_ats_register_gpu_va_space() requires mmap_lock to be held in
-        // write mode if IBM ATS support is provided through the kernel.
-        // mmap_lock is optional if IBM ATS support is provided through the
-        // driver. In all cases, We need mmap_lock at least in read mode to
-        // handle potential CPU mapping changes in
-        // uvm_va_range_add_gpu_va_space().
-        if (UVM_ATS_IBM_SUPPORTED_IN_KERNEL())
-            uvm_down_write_mmap_lock(mm);
-        else
-            uvm_down_read_mmap_lock(mm);
-    }
-}
-
-static void uvm_gpu_va_space_release_mmap_lock(struct mm_struct *mm)
-{
-    if (mm) {
-        if (UVM_ATS_IBM_SUPPORTED_IN_KERNEL())
-            uvm_up_write_mmap_lock(mm);
-        else
-            uvm_up_read_mmap_lock(mm);
-    }
-}
-
 static NV_STATUS uvm_gpu_va_space_set_page_dir(uvm_gpu_va_space_t *gpu_va_space)
 {
     NV_STATUS status;
@@ -1259,7 +1208,7 @@ static void destroy_gpu_va_space(uvm_gpu_va_space_t *gpu_va_space)
     delay_us = atomic64_read(&va_space->test.destroy_gpu_va_space_delay_us);
 
     if (delay_us)
-        udelay(delay_us);
+        os_delay_us(delay_us);
 
     // Serialize this uvm_gpu_va_space_unset_page_dir call with the one in
     // uvm_va_space_mm_shutdown, which also starts with the VA space lock in
@@ -1292,9 +1241,7 @@ static void destroy_gpu_va_space(uvm_gpu_va_space_t *gpu_va_space)
     // decrement it before calling that function.
     if (gpu_va_space->state == UVM_GPU_VA_SPACE_STATE_DEAD) {
         int num_pending = atomic_dec_return(&va_space->gpu_va_space_deferred_free.num_pending);
-        if (num_pending == 0)
-            wake_up_all(&va_space->gpu_va_space_deferred_free.wait_queue);
-        else
+        if (num_pending != 0)
             UVM_ASSERT(num_pending > 0);
     }
 
@@ -1466,20 +1413,16 @@ NV_STATUS uvm_va_space_register_gpu_va_space(uvm_va_space_t *va_space,
     uvm_gpu_t *gpu;
     uvm_gpu_va_space_t *gpu_va_space;
     uvm_va_range_t *va_range;
-    struct mm_struct *mm;
     LIST_HEAD(deferred_free_list);
 
     gpu = uvm_va_space_retain_gpu_by_uuid(va_space, gpu_uuid);
     if (!gpu)
         return NV_ERR_INVALID_DEVICE;
 
-    mm = uvm_va_space_mm_or_current_retain(va_space);
-
     status = create_gpu_va_space(gpu, va_space, user_rm_va_space, &gpu_va_space);
     if (status != NV_OK)
         goto error_gpu_release;
 
-    uvm_gpu_va_space_acquire_mmap_lock(mm);
     uvm_va_space_down_write(va_space);
 
     status = check_gpu_va_space(gpu_va_space);
@@ -1491,13 +1434,11 @@ NV_STATUS uvm_va_space_register_gpu_va_space(uvm_va_space_t *va_space,
         goto error_unlock;
 
     uvm_va_space_up_write(va_space);
-    uvm_gpu_va_space_release_mmap_lock(mm);
 
     status = uvm_gpu_va_space_set_page_dir(gpu_va_space);
     if (status != NV_OK)
         goto error_destroy;
 
-    uvm_gpu_va_space_acquire_mmap_lock(mm);
     uvm_va_space_down_write(va_space);
 
     // va_space state might have changed before the lock reacquire for write.
@@ -1514,22 +1455,20 @@ NV_STATUS uvm_va_space_register_gpu_va_space(uvm_va_space_t *va_space,
     // mappings, but that would complicate error handling since we have to
     // remove the GPU VA space if any of these mappings fail.
     uvm_for_each_va_range(va_range, va_space) {
-        status = uvm_va_range_add_gpu_va_space(va_range, gpu_va_space, mm);
+        status = uvm_va_range_add_gpu_va_space(va_range, gpu_va_space, NULL);
         if (status != NV_OK)
             goto error;
     }
 
     uvm_va_space_up_write(va_space);
-    uvm_gpu_va_space_release_mmap_lock(mm);
 
-    uvm_va_space_mm_or_current_release(va_space, mm);
     uvm_gpu_release(gpu);
 
     return NV_OK;
 
 error:
     UVM_ASSERT(uvm_gpu_va_space_state(gpu_va_space) == UVM_GPU_VA_SPACE_STATE_ACTIVE);
-    remove_gpu_va_space(gpu_va_space, mm, &deferred_free_list);
+    remove_gpu_va_space(gpu_va_space, NULL, &deferred_free_list);
 
     // Nothing else could've been attached to this gpu_va_space (channels,
     // external allocations) since we're still holding the VA space lock
@@ -1538,11 +1477,9 @@ error:
     UVM_ASSERT(list_is_singular(&deferred_free_list));
 error_unlock:
     uvm_va_space_up_write(va_space);
-    uvm_gpu_va_space_release_mmap_lock(mm);
 error_destroy:
     destroy_gpu_va_space(gpu_va_space);
 error_gpu_release:
-    uvm_va_space_mm_or_current_release(va_space, mm);
     uvm_gpu_release(gpu);
     return status;
 }
@@ -1551,7 +1488,7 @@ error_gpu_release:
 // calling this function.
 static void remove_gpu_va_space(uvm_gpu_va_space_t *gpu_va_space,
                                 struct mm_struct *mm,
-                                struct list_head *deferred_free_list)
+                                struct list *deferred_free_list)
 {
     uvm_va_space_t *va_space;
     uvm_va_range_t *va_range;
@@ -1594,7 +1531,6 @@ NV_STATUS uvm_va_space_unregister_gpu_va_space(uvm_va_space_t *va_space, const N
     NV_STATUS status = NV_OK;
     uvm_gpu_t *gpu;
     uvm_gpu_va_space_t *gpu_va_space;
-    struct mm_struct *mm;
     LIST_HEAD(deferred_free_list);
 
     // Stopping channels requires holding the VA space lock in read mode, so do
@@ -1619,7 +1555,6 @@ NV_STATUS uvm_va_space_unregister_gpu_va_space(uvm_va_space_t *va_space, const N
     uvm_gpu_retain(gpu);
     uvm_va_space_up_read_rm(va_space);
 
-    mm = uvm_va_space_mm_or_current_retain_lock(va_space);
     uvm_va_space_down_write(va_space);
 
     // We dropped the lock so we have to re-verify that this gpu_va_space is
@@ -1633,11 +1568,10 @@ NV_STATUS uvm_va_space_unregister_gpu_va_space(uvm_va_space_t *va_space, const N
         UVM_ASSERT(gpu == uvm_va_space_get_gpu_by_uuid_with_gpu_va_space(va_space, gpu_uuid));
         UVM_ASSERT(gpu_va_space == uvm_gpu_va_space_get(va_space, gpu));
 
-        remove_gpu_va_space(gpu_va_space, mm, &deferred_free_list);
+        remove_gpu_va_space(gpu_va_space, NULL, &deferred_free_list);
     }
 
     uvm_va_space_up_write(va_space);
-    uvm_va_space_mm_or_current_release_unlock(va_space, mm);
 
     uvm_deferred_free_object_list(&deferred_free_list);
     uvm_gpu_va_space_release(gpu_va_space);
@@ -1718,7 +1652,7 @@ static void uvm_deferred_free_object_channel(uvm_deferred_free_object_t *object,
     uvm_user_channel_destroy_detached(channel);
 }
 
-void uvm_deferred_free_object_list(struct list_head *deferred_free_list)
+void uvm_deferred_free_object_list(struct list *deferred_free_list)
 {
     uvm_deferred_free_object_t *object, *next;
     uvm_processor_mask_t flushed_gpus;
@@ -1767,7 +1701,7 @@ uvm_user_channel_t *uvm_gpu_va_space_get_user_channel(uvm_gpu_va_space_t *gpu_va
     return NULL;
 }
 
-NV_STATUS uvm_api_enable_peer_access(UVM_ENABLE_PEER_ACCESS_PARAMS *params, struct file *filp)
+NV_STATUS uvm_api_enable_peer_access(UVM_ENABLE_PEER_ACCESS_PARAMS *params, uvm_fd filp)
 {
     uvm_va_space_t *va_space = uvm_va_space_get(filp);
     NV_STATUS status = NV_OK;
@@ -1800,7 +1734,7 @@ NV_STATUS uvm_api_enable_peer_access(UVM_ENABLE_PEER_ACCESS_PARAMS *params, stru
     return status;
 }
 
-NV_STATUS uvm_api_disable_peer_access(UVM_DISABLE_PEER_ACCESS_PARAMS *params, struct file *filp)
+NV_STATUS uvm_api_disable_peer_access(UVM_DISABLE_PEER_ACCESS_PARAMS *params, uvm_fd filp)
 {
     uvm_va_space_t *va_space = uvm_va_space_get(filp);
     NV_STATUS status = NV_OK;
@@ -1863,188 +1797,6 @@ bool uvm_va_space_pageable_mem_access_supported(uvm_va_space_t *va_space)
     return uvm_hmm_is_enabled(va_space);
 }
 
-NV_STATUS uvm_test_get_pageable_mem_access_type(UVM_TEST_GET_PAGEABLE_MEM_ACCESS_TYPE_PARAMS *params,
-                                                 struct file *filp)
-{
-    uvm_va_space_t *va_space = uvm_va_space_get(filp);
-
-    params->type = UVM_TEST_PAGEABLE_MEM_ACCESS_TYPE_NONE;
-
-    if (uvm_va_space_pageable_mem_access_supported(va_space)) {
-        if (g_uvm_global.ats.enabled) {
-            if (UVM_ATS_IBM_SUPPORTED_IN_KERNEL())
-                params->type = UVM_TEST_PAGEABLE_MEM_ACCESS_TYPE_ATS_KERNEL;
-            else
-                params->type = UVM_TEST_PAGEABLE_MEM_ACCESS_TYPE_ATS_DRIVER;
-        }
-        else {
-            params->type = UVM_TEST_PAGEABLE_MEM_ACCESS_TYPE_HMM;
-        }
-    }
-    else if (uvm_va_space_mm_enabled(va_space)) {
-        params->type = UVM_TEST_PAGEABLE_MEM_ACCESS_TYPE_MMU_NOTIFIER;
-    }
-
-    return NV_OK;
-}
-
-NV_STATUS uvm_test_flush_deferred_work(UVM_TEST_FLUSH_DEFERRED_WORK_PARAMS *params, struct file *filp)
-{
-    UvmTestDeferredWorkType work_type = params->work_type;
-
-    switch (work_type) {
-        case UvmTestDeferredWorkTypeAcessedByMappings:
-            nv_kthread_q_flush(&g_uvm_global.global_q);
-            return NV_OK;
-        default:
-            return NV_ERR_INVALID_ARGUMENT;
-    }
-}
-
-NV_STATUS uvm_test_enable_nvlink_peer_access(UVM_TEST_ENABLE_NVLINK_PEER_ACCESS_PARAMS *params, struct file *filp)
-{
-    uvm_va_space_t *va_space = uvm_va_space_get(filp);
-    NV_STATUS status = NV_OK;
-    uvm_gpu_t *gpu0 = NULL;
-    uvm_gpu_t *gpu1 = NULL;
-    size_t table_index;
-    uvm_gpu_peer_t *peer_caps = NULL;
-
-    uvm_va_space_down_write(va_space);
-
-    gpu0 = uvm_va_space_get_gpu_by_uuid(va_space, &params->gpuUuidA);
-    gpu1 = uvm_va_space_get_gpu_by_uuid(va_space, &params->gpuUuidB);
-
-    if (gpu0 && gpu1 && !uvm_id_equal(gpu0->id, gpu1->id))
-        peer_caps = uvm_gpu_peer_caps(gpu0, gpu1);
-
-    if (!peer_caps || peer_caps->link_type < UVM_GPU_LINK_NVLINK_1) {
-        uvm_va_space_up_write(va_space);
-        return NV_ERR_INVALID_DEVICE;
-    }
-
-    table_index = uvm_gpu_peer_table_index(gpu0->id, gpu1->id);
-
-    // NVLink peers are automatically enabled in the VA space at VA space
-    // registration time. In order to avoid tests having to keep track of the
-    // different initial state for PCIe and NVLink peers, we just return NV_OK
-    // if NVLink peer were already enabled.
-    if (test_bit(table_index, va_space->enabled_peers))
-        status = NV_OK;
-    else
-        status = enable_peers(va_space, gpu0, gpu1);
-
-    uvm_va_space_up_write(va_space);
-
-    return status;
-}
-
-NV_STATUS uvm_test_disable_nvlink_peer_access(UVM_TEST_DISABLE_NVLINK_PEER_ACCESS_PARAMS *params, struct file *filp)
-{
-    uvm_va_space_t *va_space = uvm_va_space_get(filp);
-    NV_STATUS status = NV_OK;
-    uvm_gpu_t *gpu0, *gpu1;
-    LIST_HEAD(deferred_free_list);
-
-    uvm_va_space_down_write(va_space);
-
-    gpu0 = uvm_va_space_get_gpu_by_uuid(va_space, &params->gpuUuidA);
-    gpu1 = uvm_va_space_get_gpu_by_uuid(va_space, &params->gpuUuidB);
-
-    if (!gpu0 || !gpu1) {
-        status = NV_ERR_INVALID_DEVICE;
-        goto error;
-    }
-
-    if (uvm_id_equal(gpu0->id, gpu1->id)) {
-        status = NV_ERR_INVALID_DEVICE;
-        goto error;
-    }
-
-    if (!uvm_va_space_nvlink_peer_enabled(va_space, gpu0, gpu1)) {
-        status = NV_ERR_INVALID_DEVICE;
-        goto error;
-    }
-
-    disable_peers(va_space, gpu0, gpu1, &deferred_free_list);
-
-    uvm_va_space_up_write(va_space);
-
-    uvm_deferred_free_object_list(&deferred_free_list);
-
-    return NV_OK;
-
-error:
-    uvm_va_space_up_write(va_space);
-    return status;
-}
-
-NV_STATUS uvm_test_va_space_inject_error(UVM_TEST_VA_SPACE_INJECT_ERROR_PARAMS *params, struct file *filp)
-{
-    uvm_va_space_t *va_space = uvm_va_space_get(filp);
-
-    atomic_set(&va_space->test.migrate_vma_allocation_fail_nth, params->migrate_vma_allocation_fail_nth);
-
-    return NV_OK;
-}
-
-// Add a fixed number of dummy thread contexts to each thread context table.
-// The newly added thread contexts are removed by calling
-// uvm_test_va_space_remove_dummy_thread_contexts, or during VA space shutdown.
-NV_STATUS uvm_test_va_space_add_dummy_thread_contexts(UVM_TEST_VA_SPACE_ADD_DUMMY_THREAD_CONTEXTS_PARAMS *params,
-                                                       struct file *filp)
-{
-    size_t i;
-    uvm_va_space_t *va_space;
-    size_t total_dummy_thread_contexts = params->num_dummy_thread_contexts * UVM_THREAD_CONTEXT_TABLE_SIZE;
-    NV_STATUS status = NV_OK;
-
-    if (params->num_dummy_thread_contexts == 0)
-        return NV_OK;
-
-    va_space = uvm_va_space_get(filp);
-
-    uvm_va_space_down_write(va_space);
-
-    if (va_space->test.dummy_thread_context_wrappers != NULL) {
-        status = NV_ERR_INVALID_STATE;
-        goto out;
-    }
-
-    if (va_space->test.num_dummy_thread_context_wrappers > 0) {
-        status = NV_ERR_INVALID_STATE;
-        goto out;
-    }
-
-    if (!uvm_thread_context_wrapper_is_used()) {
-        status = NV_ERR_INVALID_STATE;
-        goto out;
-    }
-
-    va_space->test.dummy_thread_context_wrappers = uvm_kvmalloc(sizeof(*va_space->test.dummy_thread_context_wrappers) *
-                                                                total_dummy_thread_contexts);
-    if (va_space->test.dummy_thread_context_wrappers == NULL) {
-        status = NV_ERR_NO_MEMORY;
-        goto out;
-    }
-
-    va_space->test.num_dummy_thread_context_wrappers = total_dummy_thread_contexts;
-
-    for (i = 0; i < total_dummy_thread_contexts; i++) {
-        uvm_thread_context_t *thread_context = &va_space->test.dummy_thread_context_wrappers[i].context;
-
-        // The context pointer is used to fill the task.
-        thread_context->task = (struct task_struct *) thread_context;
-
-        uvm_thread_context_add_at(thread_context, i % UVM_THREAD_CONTEXT_TABLE_SIZE);
-    }
-
-out:
-    uvm_va_space_up_write(va_space);
-
-    return status;
-}
-
 static void va_space_remove_dummy_thread_contexts(uvm_va_space_t *va_space)
 {
     size_t i;
@@ -2069,28 +1821,4 @@ static void va_space_remove_dummy_thread_contexts(uvm_va_space_t *va_space)
     uvm_kvfree(va_space->test.dummy_thread_context_wrappers);
     va_space->test.dummy_thread_context_wrappers = NULL;
     va_space->test.num_dummy_thread_context_wrappers = 0;
-}
-
-NV_STATUS uvm_test_va_space_remove_dummy_thread_contexts(UVM_TEST_VA_SPACE_REMOVE_DUMMY_THREAD_CONTEXTS_PARAMS *params,
-                                                          struct file *filp)
-{
-    uvm_va_space_t *va_space = uvm_va_space_get(filp);
-
-    uvm_va_space_down_write(va_space);
-
-    va_space_remove_dummy_thread_contexts(va_space);
-
-    uvm_va_space_up_write(va_space);
-
-    return NV_OK;
-}
-
-NV_STATUS uvm_test_destroy_gpu_va_space_delay(UVM_TEST_DESTROY_GPU_VA_SPACE_DELAY_PARAMS *params, struct file *filp)
-{
-    uvm_va_space_t *va_space = uvm_va_space_get(filp);
-
-    // va_space lock is not needed here.
-    atomic64_set(&va_space->test.destroy_gpu_va_space_delay_us, params->delay_us);
-
-    return NV_OK;
 }

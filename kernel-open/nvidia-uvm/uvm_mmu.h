@@ -128,7 +128,7 @@ typedef struct
     NvU64 size;
     union
     {
-        struct page *page;
+        u64 page;
         uvm_gpu_chunk_t *chunk;
     } handle;
 } uvm_mmu_page_table_alloc_t;

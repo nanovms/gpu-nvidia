@@ -252,7 +252,7 @@ void nvDbg_vPrintf
           _nvDbgPrepareString(filename, linenumber, function, printf_format, prefix, arglist);
 #if PORT_IS_FUNC_SUPPORTED(portDbgExPrintfLevel)
           portDbgExPrintfLevel(_nvDbgLevelToPlatformLevel(force, debuglevel),
-                               "%.*s", MAX_ERROR_STRING, _nv_dbg_string);
+                               "%s", _nv_dbg_string);
 #else
           portDbgPrintString(_nv_dbg_string, MAX_ERROR_STRING);
 #endif

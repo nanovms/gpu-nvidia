@@ -135,11 +135,8 @@ static NV_STATUS _osVerifyInterrupts(
     NvU32  gpuAttachCnt, gpuAttachMask, gpuInstance, i;
 
     //
-    // We're adding the PDB_PROP_GPU_TEGRA_SOC_NVDISPLAY check since none of the
-    // support required to run this interrupt sanity test has been brought up
-    // yet for T234D SOC display.
+    // Interrupts may be disabled when running on Nanos
     //
-    if (pGpu->getProperty(pGpu, PDB_PROP_GPU_TEGRA_SOC_NVDISPLAY))
     {
         //
         // Nothing to verify here for the time being

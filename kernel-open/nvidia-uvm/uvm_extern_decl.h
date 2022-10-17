@@ -24,7 +24,7 @@
 #ifndef __UVM_EXTERN_DECL_H__
 #define __UVM_EXTERN_DECL_H__
 
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_forward_decl.h"
 
 extern int uvm_enable_debug_procfs;

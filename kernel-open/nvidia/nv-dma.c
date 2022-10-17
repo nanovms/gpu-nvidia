@@ -24,13 +24,11 @@
 #define  __NO_VERSION__
 
 #include "os-interface.h"
-#include "nv-linux.h"
+#include "nv-nanos.h"
 #include "nv-reg.h"
 
 #define NV_DMA_DEV_PRINTF(debuglevel, dma_dev, format, ... )                \
-    nv_printf(debuglevel, "NVRM: %s: " format,                              \
-              (((dma_dev) && ((dma_dev)->dev)) ? dev_name((dma_dev)->dev) : \
-                                                 NULL),                     \
+    nv_printf(debuglevel, "NVRM: " format,                                  \
               ## __VA_ARGS__)
 
 NvU32 nv_dma_remap_peer_mmio = NV_DMA_REMAP_PEER_MMIO_ENABLE;
@@ -68,13 +66,8 @@ static NV_STATUS nv_dma_map_contig(
                              (dma_map->cache_type == NV_MEMORY_UNCACHED) ?
                               DMA_ATTR_SKIP_CPU_SYNC : 0);
 #else
-    *va = dma_map_page(dma_map->dev, dma_map->pages[0], 0,
-            dma_map->page_count * PAGE_SIZE, DMA_BIDIRECTIONAL);
+    *va = dma_map->pages[0];
 #endif
-    if (dma_mapping_error(dma_map->dev, *va))
-    {
-        return NV_ERR_OPERATING_SYSTEM;
-    }
 
     dma_map->mapping.contig.dma_addr = *va;
 
@@ -101,35 +94,24 @@ static void nv_dma_unmap_contig(nv_dma_map_t *dma_map)
                          DMA_BIDIRECTIONAL,
                          (dma_map->cache_type == NV_MEMORY_UNCACHED) ?
                           DMA_ATTR_SKIP_CPU_SYNC : 0);
-#else
-    dma_unmap_page(dma_map->dev, dma_map->mapping.contig.dma_addr,
-            dma_map->page_count * PAGE_SIZE, DMA_BIDIRECTIONAL);
 #endif
 }
 
 static void nv_fill_scatterlist
 (
-    struct scatterlist *sgl,
-    struct page **pages,
+    sg_list sgl,
+    NvU64 *pages,
     unsigned int page_count
 )
 {
-    unsigned int i;
-    struct scatterlist *sg;
-#if defined(for_each_sg)
-    for_each_sg(sgl, sg, page_count, i)
+    unsigned int i = 0;
+    sg_list_foreach(sgl, sgb)
     {
-        sg_set_page(sg, pages[i], PAGE_SIZE, 0);
+        sgb->buf = pointer_from_u64(pages[i++]);
+        sgb->size = PAGE_SIZE;
+        sgb->offset = 0;
+        sgb->refcount = 0;
     }
-#else
-    for (i = 0; i < page_count; i++)
-    {
-        sg = &(sgl)[i];
-        sg->page = pages[i];
-        sg->length = PAGE_SIZE;
-        sg->offset = 0;
-    }
-#endif
 }
 
 NV_STATUS nv_create_dma_map_scatterlist(nv_dma_map_t *dma_map)
@@ -147,12 +129,7 @@ NV_STATUS nv_create_dma_map_scatterlist(nv_dma_map_t *dma_map)
     NvU64 num_submaps = dma_map->page_count + NV_DMA_SUBMAP_MAX_PAGES - 1;
     NvU64 total_size = dma_map->page_count << PAGE_SHIFT;
 
-    /*
-     * This turns into 64-bit division, which the ARMv7 kernel doesn't provide
-     * implicitly. Instead, we need to use the platform's do_div() to perform
-     * the division.
-     */
-    do_div(num_submaps, NV_DMA_SUBMAP_MAX_PAGES);
+    num_submaps /= NV_DMA_SUBMAP_MAX_PAGES;
 
     WARN_ON(NvU64_HI32(num_submaps) != 0);
 
@@ -201,7 +178,7 @@ NV_STATUS nv_create_dma_map_scatterlist(nv_dma_map_t *dma_map)
     defined(NV_DOM0_KERNEL_PRESENT)
         {
             NvU64 page_idx = NV_DMA_SUBMAP_IDX_TO_PAGE_IDX(i);
-            nv_fill_scatterlist(submap->sgt.sgl,
+            nv_fill_scatterlist(&submap->sgt,
                 &dma_map->pages[page_idx], submap->page_count);
         }
 #endif
@@ -228,12 +205,7 @@ NV_STATUS nv_map_dma_map_scatterlist(nv_dma_map_t *dma_map)
     NV_FOR_EACH_DMA_SUBMAP(dma_map, submap, i)
     {
         /* Imported SGTs will have already been mapped by the exporter. */
-        submap->sg_map_count = submap->imported ?
-            submap->sgt.orig_nents :
-            dma_map_sg(dma_map->dev,
-                       submap->sgt.sgl,
-                       submap->sgt.orig_nents,
-                       DMA_BIDIRECTIONAL);
+        submap->sg_map_count = sg_list_length(&submap->sgt);
         if (submap->sg_map_count == 0)
         {
             status = NV_ERR_OPERATING_SYSTEM;
@@ -266,10 +238,6 @@ void nv_unmap_dma_map_scatterlist(nv_dma_map_t *dma_map)
             /* Imported SGTs will be unmapped by the exporter. */
             continue;
         }
-
-        dma_unmap_sg(dma_map->dev, submap->sgt.sgl,
-                submap->sgt.orig_nents,
-                DMA_BIDIRECTIONAL);
     }
 }
 
@@ -285,7 +253,8 @@ void nv_destroy_dma_map_scatterlist(nv_dma_map_t *dma_map)
             break;
         }
 
-        sg_free_table(&submap->sgt);
+        sg_list_release(&submap->sgt);
+        deallocate_buffer(submap->sgt.b);
     }
 
     os_free_mem(dma_map->mapping.discontig.submaps);
@@ -296,20 +265,19 @@ void nv_load_dma_map_scatterlist(
     NvU64 *va_array
 )
 {
-    unsigned int i, j;
-    struct scatterlist *sg;
+    unsigned int i;
     nv_dma_submap_t *submap;
     NvU64 sg_addr, sg_off, sg_len, k, l = 0;
 
     NV_FOR_EACH_DMA_SUBMAP(dma_map, submap, i)
     {
-        for_each_sg(submap->sgt.sgl, sg, submap->sg_map_count, j)
+        sg_list_foreach(&submap->sgt, sgb)
         {
             /*
              * It is possible for pci_map_sg() to merge scatterlist entries, so
              * make sure we account for that here.
              */
-            for (sg_addr = sg_dma_address(sg), sg_len = sg_dma_len(sg),
+            for (sg_addr = u64_from_pointer(sgb->buf), sg_len = sgb->size,
                     sg_off = 0, k = 0;
                  (sg_off < sg_len) && (k < submap->page_count);
                  sg_off += PAGE_SIZE, l++, k++)
@@ -411,27 +379,6 @@ static void nv_dma_nvlink_addr_compress
 #endif
 }
 
-static void nv_dma_nvlink_addr_decompress
-(
-    nv_dma_device_t *dma_dev,
-    NvU64           *va_array,
-    NvU64            page_count,
-    NvBool           contig
-)
-{
-#if defined(NVCPU_PPC64LE)
-    NvU64 i;
-
-    if (dma_dev->nvlink)
-    {
-        for (i = 0; i < (contig ? 1 : page_count); i++)
-        {
-            va_array[i] = nv_expand_nvlink_addr(va_array[i]);
-        }
-    }
-#endif
-}
-
 NV_STATUS NV_API_CALL nv_dma_map_sgt(
     nv_dma_device_t *dma_dev,
     NvU64            page_count,
@@ -463,9 +410,8 @@ NV_STATUS NV_API_CALL nv_dma_map_sgt(
         return status;
     }
 
-    dma_map->dev = dma_dev->dev;
     dma_map->pages = NULL;
-    dma_map->import_sgt = (struct sg_table *) *priv;
+    dma_map->import_sgt = (sg_list) *priv;
     dma_map->page_count = page_count;
     dma_map->contiguous = NV_FALSE;
     dma_map->cache_type = cache_type;
@@ -546,7 +492,6 @@ NV_STATUS NV_API_CALL nv_dma_map_pages(
         return status;
     }
 
-    dma_map->dev = dma_dev->dev;
     dma_map->pages = *priv;
     dma_map->import_sgt = NULL;
     dma_map->page_count = page_count;
@@ -650,7 +595,7 @@ NV_STATUS NV_API_CALL nv_dma_map_alloc
     NV_STATUS status;
     NvU64 i;
     nv_alloc_t *at = *priv;
-    struct page **pages = NULL;
+    NvU64 *pages = NULL;
     NvU32 cache_type = NV_MEMORY_CACHED;
     NvU64 pages_size = sizeof(struct page *) * (contig ? 1 : page_count);
 
@@ -699,19 +644,19 @@ NV_STATUS NV_API_CALL nv_dma_map_alloc
         else if (at->flags.physical && contig)
         {
             /* Supplied pages hold physical address */
-            pages[0] = pfn_to_page(PFN_DOWN(va_array[0]));
+            pages[0] = va_array[0] & ~MASK(PAGELOG);
         }
         cache_type = at->cache_type;
     }
 
     if (pages[0] == NULL)
     {
-        pages[0] = NV_GET_PAGE_STRUCT(va_array[0]);
+        pages[0] = va_array[0];
         if (!contig)
         {
             for (i = 1; i < page_count; i++)
             {
-                pages[i] = NV_GET_PAGE_STRUCT(va_array[i]);
+                pages[i] = va_array[i];
             }
         }
     }
@@ -811,36 +756,9 @@ NV_STATUS NV_API_CALL nv_dma_map_peer
     NvU64           *va
 )
 {
-    struct pci_dev *peer_pci_dev = to_pci_dev(peer_dma_dev->dev);
-    struct resource *res;
     NV_STATUS status;
 
-    if (peer_pci_dev == NULL)
-    {
-        NV_DMA_DEV_PRINTF(NV_DBG_ERRORS, peer_dma_dev,
-            "Not a PCI device");
-        return NV_ERR_INVALID_REQUEST;
-    }
-
     BUG_ON(bar_index >= NV_GPU_NUM_BARS);
-    res = &peer_pci_dev->resource[bar_index];
-    if (res->start == 0)
-    {
-        NV_DMA_DEV_PRINTF(NV_DBG_ERRORS, peer_dma_dev,
-                "Resource %u not valid",
-                bar_index);
-        return NV_ERR_INVALID_REQUEST;
-    }
-
-    if ((*va < res->start) || ((*va + (page_count * PAGE_SIZE)) > res->end))
-    {
-        NV_DMA_DEV_PRINTF(NV_DBG_ERRORS, peer_dma_dev,
-                "Mapping requested (start = 0x%llx, page_count = 0x%llx)"
-                " outside of resource bounds (start = 0x%llx, end = 0x%llx)\n",
-                *va, page_count, res->start, res->end);
-        return NV_ERR_INVALID_REQUEST;
-    }
-
     if (nv_dma_use_map_resource(dma_dev))
     {
         status = nv_dma_map_mmio(dma_dev, page_count, va);
@@ -851,8 +769,6 @@ NV_STATUS NV_API_CALL nv_dma_map_peer
          * Best effort - can't map through the iommu but at least try to
          * convert to a bus address.
          */
-        NvU64 offset = *va - res->start;
-        *va = nv_pci_bus_address(peer_pci_dev, bar_index) + offset;
         status = NV_OK;
     }
 
@@ -984,39 +900,6 @@ void NV_API_CALL nv_dma_enable_nvlink
 #if defined(NV_LINUX_DMA_BUF_H_PRESENT) && \
     defined(NV_DRM_AVAILABLE) && defined(NV_DRM_DRM_GEM_H_PRESENT)
 
-/*
- * drm_gem_object_{get/put}() added by commit
- * e6b62714e87c8811d5564b6a0738dcde63a51774 (2017-02-28) and
- * drm_gem_object_{reference/unreference}() removed by commit
- * 3e70fd160cf0b1945225eaa08dd2cb8544f21cb8 (2018-11-15).
- */
-
-static inline void
-nv_dma_gem_object_unreference_unlocked(struct drm_gem_object *gem)
-{
-#if defined(NV_DRM_GEM_OBJECT_GET_PRESENT)
-
-#if defined(NV_DRM_GEM_OBJECT_PUT_UNLOCK_PRESENT)
-    drm_gem_object_put_unlocked(gem);
-#else
-    drm_gem_object_put(gem);
-#endif
-
-#else
-    drm_gem_object_unreference_unlocked(gem);
-#endif
-}
-
-static inline void
-nv_dma_gem_object_reference(struct drm_gem_object *gem)
-{
-#if defined(NV_DRM_GEM_OBJECT_GET_PRESENT)
-    drm_gem_object_get(gem);
-#else
-    drm_gem_object_reference(gem);
-#endif
-}
-
 NV_STATUS NV_API_CALL nv_dma_import_sgt
 (
     nv_dma_device_t *dma_dev,
@@ -1033,17 +916,7 @@ NV_STATUS NV_API_CALL nv_dma_import_sgt
         return NV_ERR_INVALID_ARGUMENT;
     }
 
-    // Prevent the kernel module controlling GEM from being unloaded
-    if (!try_module_get(gem->dev->driver->fops->owner))
-    {
-        NV_DMA_DEV_PRINTF(NV_DBG_ERRORS, dma_dev,
-                "Couldn't reference the GEM object's owner!\n");
-        return NV_ERR_INVALID_DEVICE;
-    }
-
     // Do nothing with SGT, it is already mapped and pinned by the exporter
-
-    nv_dma_gem_object_reference(gem);
 
     return NV_OK;
 }
@@ -1061,10 +934,6 @@ void NV_API_CALL nv_dma_release_sgt
 
     // Do nothing with SGT, it will be unmapped and unpinned by the exporter
     WARN_ON(sgt == NULL);
-
-    nv_dma_gem_object_unreference_unlocked(gem);
-
-    module_put(gem->dev->driver->fops->owner);
 }
 
 #else

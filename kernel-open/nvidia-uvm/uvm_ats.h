@@ -24,7 +24,7 @@
 #ifndef __UVM_ATS_H__
 #define __UVM_ATS_H__
 
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_forward_decl.h"
 #include "uvm_ats_ibm.h"
 #include "nv_uvm_types.h"

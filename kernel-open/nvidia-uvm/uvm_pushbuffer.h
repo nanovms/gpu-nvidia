@@ -26,7 +26,7 @@
 
 #include "uvm_forward_decl.h"
 #include "uvm_lock.h"
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "nvtypes.h"
 
 //
@@ -163,7 +163,7 @@ typedef struct
 
     // List of uvm_gpfifo_entry_t that are pending and used this chunk. New
     // entries are always added at the tail of the list.
-    struct list_head pending_gpfifos;
+    struct list pending_gpfifos;
 
     // Currently on-going push in the chunk. There can be only one at a time.
     uvm_push_t *current_push;

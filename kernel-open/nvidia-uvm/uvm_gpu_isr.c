@@ -201,17 +201,6 @@ static NV_STATUS uvm_isr_top_half(const NvProcessorUuid *gpu_uuid)
     unsigned num_handlers_scheduled = 0;
     NV_STATUS status;
 
-    if (!in_interrupt() && in_atomic()) {
-        // Early-out if we're not in interrupt context, but memory allocations
-        // require GFP_ATOMIC. This happens with CONFIG_DEBUG_SHIRQ enabled,
-        // where the interrupt handler is called as part of its removal to make
-        // sure it's prepared for being called even when it's being freed.
-        // This breaks the assumption that the UVM driver is called in atomic
-        // context only in the interrupt context, which the thread context
-        // management relies on.
-        return NV_OK;
-    }
-
     if (!gpu_uuid) {
         // This can happen early in the main GPU driver initialization, because
         // that involves testing interrupts before the GPU is fully set up.
@@ -284,7 +273,7 @@ static NV_STATUS init_queue_on_node(nv_kthread_q_t *queue, const char *name, int
 NV_STATUS uvm_gpu_init_isr(uvm_parent_gpu_t *parent_gpu)
 {
     NV_STATUS status = NV_OK;
-    char kthread_name[TASK_COMM_LEN + 1];
+    char kthread_name[16 + 1];
 
     if (parent_gpu->replayable_faults_supported) {
         status = uvm_gpu_fault_buffer_init(parent_gpu);
@@ -300,7 +289,7 @@ NV_STATUS uvm_gpu_init_isr(uvm_parent_gpu_t *parent_gpu)
                                parent_gpu);
 
         parent_gpu->isr.replayable_faults.stats.cpu_exec_count =
-            uvm_kvmalloc_zero(sizeof(*parent_gpu->isr.replayable_faults.stats.cpu_exec_count) * num_possible_cpus());
+            uvm_kvmalloc_zero(sizeof(*parent_gpu->isr.replayable_faults.stats.cpu_exec_count) * present_processors);
         if (!parent_gpu->isr.replayable_faults.stats.cpu_exec_count)
             return NV_ERR_NO_MEMORY;
 
@@ -322,7 +311,7 @@ NV_STATUS uvm_gpu_init_isr(uvm_parent_gpu_t *parent_gpu)
 
             parent_gpu->isr.non_replayable_faults.stats.cpu_exec_count =
                 uvm_kvmalloc_zero(sizeof(*parent_gpu->isr.non_replayable_faults.stats.cpu_exec_count) *
-                                  num_possible_cpus());
+                                  present_processors);
             if (!parent_gpu->isr.non_replayable_faults.stats.cpu_exec_count)
                 return NV_ERR_NO_MEMORY;
 
@@ -357,7 +346,7 @@ NV_STATUS uvm_gpu_init_isr(uvm_parent_gpu_t *parent_gpu)
             // dynamically enabled when the GPU is registered on a VA space.
             parent_gpu->isr.access_counters.handling_ref_count = 0;
             parent_gpu->isr.access_counters.stats.cpu_exec_count =
-                uvm_kvmalloc_zero(sizeof(*parent_gpu->isr.access_counters.stats.cpu_exec_count) * num_possible_cpus());
+                uvm_kvmalloc_zero(sizeof(*parent_gpu->isr.access_counters.stats.cpu_exec_count) * present_processors);
             if (!parent_gpu->isr.access_counters.stats.cpu_exec_count)
                 return NV_ERR_NO_MEMORY;
         }
@@ -500,11 +489,9 @@ static void replayable_faults_isr_bottom_half(void *args)
     // Multiple bottom halves for replayable faults can be running
     // concurrently, but only one can be running this function for a given GPU
     // since we enter with the replayable_faults.service_lock held.
-    cpu = get_cpu();
+    cpu = os_get_cpu_number();
     ++parent_gpu->isr.replayable_faults.stats.bottom_half_count;
-    cpumask_set_cpu(cpu, &parent_gpu->isr.replayable_faults.stats.cpus_used_mask);
     ++parent_gpu->isr.replayable_faults.stats.cpu_exec_count[cpu];
-    put_cpu();
 
     uvm_gpu_service_replayable_faults(gpu);
 
@@ -536,11 +523,9 @@ static void non_replayable_faults_isr_bottom_half(void *args)
     // Multiple bottom halves for non-replayable faults can be running
     // concurrently, but only one can enter this section for a given GPU
     // since we acquired the non_replayable_faults.service_lock
-    cpu = get_cpu();
+    cpu = os_get_cpu_number();
     ++parent_gpu->isr.non_replayable_faults.stats.bottom_half_count;
-    cpumask_set_cpu(cpu, &parent_gpu->isr.non_replayable_faults.stats.cpus_used_mask);
     ++parent_gpu->isr.non_replayable_faults.stats.cpu_exec_count[cpu];
-    put_cpu();
 
     uvm_gpu_service_non_replayable_fault_buffer(gpu);
 
@@ -572,11 +557,9 @@ static void access_counters_isr_bottom_half(void *args)
     // Multiple bottom halves for counter notifications can be running
     // concurrently, but only one can be running this function for a given GPU
     // since we enter with the access_counters_isr_lock held.
-    cpu = get_cpu();
+    cpu = os_get_cpu_number();
     ++parent_gpu->isr.access_counters.stats.bottom_half_count;
-    cpumask_set_cpu(cpu, &parent_gpu->isr.access_counters.stats.cpus_used_mask);
     ++parent_gpu->isr.access_counters.stats.cpu_exec_count[cpu];
-    put_cpu();
 
     uvm_gpu_service_access_counters(gpu);
 

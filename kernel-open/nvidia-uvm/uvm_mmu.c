@@ -106,44 +106,29 @@ static NV_STATUS phys_mem_allocate_sysmem(uvm_page_tree_t *tree, NvLength size, 
 {
     NV_STATUS status = NV_OK;
     NvU64 dma_addr;
-    unsigned long flags = __GFP_ZERO;
     uvm_memcg_context_t memcg_context;
-    uvm_va_space_t *va_space;
-    struct mm_struct *mm = NULL;
+    heap h = (heap)heap_physical(get_kernel_heaps());
 
     if (tree->type == UVM_PAGE_TREE_TYPE_USER && tree->gpu_va_space && UVM_CGROUP_ACCOUNTING_SUPPORTED()) {
-        va_space = tree->gpu_va_space->va_space;
-        mm = uvm_va_space_mm_retain(va_space);
-        if (mm)
-            uvm_memcg_context_start(&memcg_context, mm);
+        uvm_memcg_context_start(&memcg_context);
     }
 
-    // If mm is not NULL, memcg context has been started and we can use
-    // the account flags.
-    if (mm)
-        flags |= NV_UVM_GFP_FLAGS_ACCOUNT;
-    else
-        flags |= NV_UVM_GFP_FLAGS;
-
-    out->handle.page = alloc_pages(flags, get_order(size));
+    out->handle.page = allocate_u64(h, size);
 
     // va_space and mm will be set only if the memcg context has been started.
-    if (mm) {
-        uvm_memcg_context_end(&memcg_context);
-        uvm_va_space_mm_release(va_space);
-    }
+    uvm_memcg_context_end(&memcg_context);
 
-    if (out->handle.page == NULL)
+    if (out->handle.page == INVALID_PHYSICAL)
         return NV_ERR_NO_MEMORY;
 
     // Check for fake GPUs from the unit test
     if (tree->gpu->parent->pci_dev)
         status = uvm_gpu_map_cpu_pages(tree->gpu, out->handle.page, UVM_PAGE_ALIGN_UP(size), &dma_addr);
     else
-        dma_addr = page_to_phys(out->handle.page);
+        dma_addr = out->handle.page;
 
     if (status != NV_OK) {
-        __free_pages(out->handle.page, get_order(size));
+        deallocate_u64(h, out->handle.page, size);
         return status;
     }
 
@@ -224,7 +209,7 @@ static void phys_mem_deallocate_sysmem(uvm_page_tree_t *tree, uvm_mmu_page_table
     UVM_ASSERT(ptr->addr.aperture == UVM_APERTURE_SYS);
     if (tree->gpu->parent->pci_dev)
         uvm_gpu_unmap_cpu_pages(tree->gpu, ptr->addr.address, UVM_PAGE_ALIGN_UP(ptr->size));
-    __free_pages(ptr->handle.page, get_order(ptr->size));
+    deallocate_u64((heap)heap_physical(get_kernel_heaps()), ptr->handle.page, ptr->size);
 }
 
 static void phys_mem_deallocate(uvm_page_tree_t *tree, uvm_mmu_page_table_alloc_t *ptr)
@@ -780,7 +765,7 @@ NV_STATUS uvm_page_tree_init(uvm_gpu_t *gpu,
 {
     uvm_push_t push;
     NV_STATUS status;
-    BUILD_BUG_ON(sizeof(uvm_page_directory_t) != offsetof(uvm_page_directory_t, entries));
+    BUILD_BUG_ON(sizeof(uvm_page_directory_t) != offsetof(uvm_page_directory_t *, entries));
 
     UVM_ASSERT(type < UVM_PAGE_TREE_TYPE_COUNT);
 
@@ -2423,57 +2408,4 @@ void uvm_mmu_destroy_flat_mappings(uvm_gpu_t *gpu)
     destroy_dynamic_vidmem_mapping(gpu);
     destroy_static_vidmem_mapping(gpu);
     destroy_dynamic_sysmem_mapping(gpu);
-}
-
-NV_STATUS uvm_test_invalidate_tlb(UVM_TEST_INVALIDATE_TLB_PARAMS *params, struct file *filp)
-{
-    NV_STATUS status;
-    uvm_gpu_t *gpu = NULL;
-    uvm_push_t push;
-    uvm_va_space_t *va_space = uvm_va_space_get(filp);
-    uvm_gpu_va_space_t *gpu_va_space;
-
-    // Check parameter values
-    if (params->membar < UvmInvalidateTlbMemBarNone ||
-        params->membar > UvmInvalidateTlbMemBarLocal) {
-        return NV_ERR_INVALID_PARAMETER;
-    }
-
-    if (params->target_va_mode < UvmTargetVaModeAll ||
-        params->target_va_mode > UvmTargetVaModeTargeted) {
-        return NV_ERR_INVALID_PARAMETER;
-    }
-
-    if (params->page_table_level < UvmInvalidatePageTableLevelAll ||
-        params->page_table_level > UvmInvalidatePageTableLevelPde4) {
-        return NV_ERR_INVALID_PARAMETER;
-    }
-
-    uvm_va_space_down_read(va_space);
-
-    gpu = uvm_va_space_get_gpu_by_uuid_with_gpu_va_space(va_space, &params->gpu_uuid);
-    if (!gpu) {
-        status = NV_ERR_INVALID_DEVICE;
-        goto unlock_exit;
-    }
-
-    gpu_va_space = uvm_gpu_va_space_get(va_space, gpu);
-    UVM_ASSERT(gpu_va_space);
-
-    status = uvm_push_begin(gpu->channel_manager,
-                            UVM_CHANNEL_TYPE_MEMOPS,
-                            &push,
-                            "Pushing test invalidate, GPU %s",
-                            uvm_gpu_name(gpu));
-    if (status == NV_OK)
-        gpu->parent->host_hal->tlb_invalidate_test(&push, uvm_page_tree_pdb(&gpu_va_space->page_tables)->addr, params);
-
-unlock_exit:
-    // Wait for the invalidation to be performed
-    if (status == NV_OK)
-        status = uvm_push_end_and_wait(&push);
-
-    uvm_va_space_up_read(va_space);
-
-    return status;
 }

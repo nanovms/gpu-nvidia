@@ -25,7 +25,7 @@
 #define __UVM_MIGRATE_PAGEABLE_H__
 
 #include "uvm_common.h"
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_populate_pageable.h"
 #include "uvm_forward_decl.h"
 #include "uvm_processors.h"
@@ -220,9 +220,6 @@ void uvm_migrate_pageable_exit(void);
 static NV_STATUS uvm_migrate_pageable(uvm_migrate_args_t *uvm_migrate_args)
 {
     NV_STATUS status;
-
-    if (current->mm != uvm_migrate_args->mm && !(current->flags & PF_KTHREAD))
-        return NV_ERR_NOT_SUPPORTED;
 
     status = uvm_populate_pageable(uvm_migrate_args->mm,
                                    uvm_migrate_args->start,

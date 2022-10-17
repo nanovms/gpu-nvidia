@@ -101,22 +101,5 @@ int nvlink_cap_init(const char *path)
         return -1;
     }
 
-    nvlink_caps.root = nv_cap_init(path);
-    if (nvlink_caps.root == NULL)
-    {
-        nvlink_print(NVLINK_DBG_ERRORS, "Failed to initialize capabilities\n");
-        return -1;
-    }
-
-    nvlink_caps.fabric_mgmt = nv_cap_create_file_entry(nvlink_caps.root,
-                                                       NVLINK_CAP_FABRIC_MGMT,
-                                                       S_IRUSR);
-    if (nvlink_caps.fabric_mgmt == NULL)
-    {
-        nvlink_print(NVLINK_DBG_ERRORS, "Failed to create fabric-mgmt entry\n");
-        nvlink_cap_exit();
-        return -1;
-    }
-
     return 0;
 }

@@ -6473,7 +6473,7 @@ NV_STATUS nvGpuOpsUnsetPageDirectory(struct gpuAddressSpace *vaSpace)
     NV0080_CTRL_DMA_UNSET_PAGE_DIRECTORY_PARAMS params = {0};
     OBJGPU *pGpu = NULL;
     OBJVASPACE *pVAS = NULL;
-    RsClient *pClient;
+    RsClient *pClient = NULL;
     RM_API *pRmApi = rmapiGetInterface(RMAPI_GPU_LOCK_INTERNAL);
 
     if (!vaSpace)

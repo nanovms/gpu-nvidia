@@ -24,7 +24,7 @@
 #ifndef __UVM_TEST_H__
 #define __UVM_TEST_H__
 
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_common.h"
 #include "uvm_test_ioctl.h"
 

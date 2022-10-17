@@ -31,10 +31,10 @@
 #include "uvm_range_group.h"
 #include "uvm_forward_decl.h"
 #include "uvm_mmu.h"
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_common.h"
 #include "nv-kref.h"
-#include "nv-linux.h"
+#include "nv-nanos.h"
 #include "uvm_perf_events.h"
 #include "uvm_perf_module.h"
 #include "uvm_va_block_types.h"
@@ -62,10 +62,10 @@ typedef enum
 typedef struct
 {
     uvm_deferred_free_object_type_t type;
-    struct list_head list_node;
+    struct list list_node;
 } uvm_deferred_free_object_t;
 
-static void uvm_deferred_free_object_add(struct list_head *list,
+static void uvm_deferred_free_object_add(struct list *list,
                                          uvm_deferred_free_object_t *object,
                                          uvm_deferred_free_object_type_t type)
 {
@@ -77,7 +77,7 @@ static void uvm_deferred_free_object_add(struct list_head *list,
 // type.
 //
 // LOCKING: May take the GPU isr_lock and the RM locks.
-void uvm_deferred_free_object_list(struct list_head *deferred_free_list);
+void uvm_deferred_free_object_list(struct list *deferred_free_list);
 
 typedef enum
 {
@@ -113,13 +113,13 @@ struct uvm_gpu_va_space_struct
     uvm_page_tree_t page_tables;
 
     // List of all uvm_user_channel_t's under this GPU VA space
-    struct list_head registered_channels;
+    struct list registered_channels;
 
     // List of all uvm_va_range_t's under this GPU VA space with type ==
     // UVM_VA_RANGE_TYPE_CHANNEL. Used at channel registration time to find
     // shareable VA ranges without having to iterate through all VA ranges in
     // the VA space.
-    struct list_head channel_va_ranges;
+    struct list channel_va_ranges;
 
     // Boolean which is 1 if no new channel registration is allowed. This is set
     // when all the channels under the GPU VA space have been stopped to prevent
@@ -190,18 +190,14 @@ struct uvm_va_space_struct
     // Tree of uvm_va_range_t's
     uvm_range_tree_t va_range_tree;
 
-    // Kernel mapping structure passed to unmap_mapping range to unmap CPU PTEs
-    // in this process.
-    struct address_space mapping;
-
     // Storage in g_uvm_global.va_spaces.list
-    struct list_head list_node;
+    struct list list_node;
 
     // Monotonically increasing counter for range groups IDs
     atomic64_t range_group_id_counter;
 
     // Range groups
-    struct radix_tree_root range_groups;
+    table range_groups;
     uvm_range_tree_t range_group_ranges;
 
     // Peer to peer table
@@ -296,7 +292,6 @@ struct uvm_va_space_struct
     struct
     {
         atomic_t num_pending;
-        wait_queue_head_t wait_queue;
     } gpu_va_space_deferred_free;
 
     // Per-va_space event notification information for performance heuristics
@@ -316,11 +311,11 @@ struct uvm_va_space_struct
         uvm_rw_semaphore_t lock;
 
         // Lists of counters listening for events on this VA space
-        struct list_head counters[UVM_TOTAL_COUNTERS];
-        struct list_head queues[UvmEventNumTypesAll];
+        struct list counters[UVM_TOTAL_COUNTERS];
+        struct list queues[UvmEventNumTypesAll];
 
         // Node for this va_space in global subscribers list
-        struct list_head node;
+        struct list node;
     } tools;
 
     // Boolean which is 1 if all user channels have been already stopped. This
@@ -442,7 +437,7 @@ static NV_STATUS uvm_va_space_initialized(uvm_va_space_t *va_space)
     return NV_ERR_ILLEGAL_ACTION;
 }
 
-NV_STATUS uvm_va_space_create(struct inode *inode, struct file *filp);
+NV_STATUS uvm_va_space_create(uvm_fd fd);
 void uvm_va_space_destroy(uvm_va_space_t *va_space);
 
 // All VA space locking should be done with these wrappers. They're macros so
@@ -571,18 +566,18 @@ void uvm_va_space_stop_all_user_channels(uvm_va_space_t *va_space);
 // destroy operation.
 //
 // LOCKING: The owning VA space must be locked in write mode.
-void uvm_va_space_detach_all_user_channels(uvm_va_space_t *va_space, struct list_head *deferred_free_list);
+void uvm_va_space_detach_all_user_channels(uvm_va_space_t *va_space, struct list *deferred_free_list);
 
 // Returns whether peer access between these two GPUs has been enabled in this
 // VA space. Both GPUs must be registered in the VA space.
 bool uvm_va_space_peer_enabled(uvm_va_space_t *va_space, uvm_gpu_t *gpu1, uvm_gpu_t *gpu2);
 
-static uvm_va_space_t *uvm_va_space_get(struct file *filp)
+static uvm_va_space_t *uvm_va_space_get(uvm_fd filp)
 {
     UVM_ASSERT(uvm_file_is_nvidia_uvm(filp));
-    UVM_ASSERT_MSG(filp->private_data != NULL, "filp: 0x%llx", (NvU64)filp);
+    UVM_ASSERT_MSG(filp->va_space != NULL, "filp: 0x%lx", (NvU64)filp);
 
-    return (uvm_va_space_t *)filp->private_data;
+    return filp->va_space;
 }
 
 static uvm_va_block_context_t *uvm_va_space_block_context(uvm_va_space_t *va_space, struct mm_struct *mm)

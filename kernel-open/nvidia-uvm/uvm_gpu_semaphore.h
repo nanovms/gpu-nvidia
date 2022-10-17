@@ -27,7 +27,7 @@
 #include "uvm_forward_decl.h"
 #include "uvm_lock.h"
 #include "uvm_rm_mem.h"
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 
 // A GPU semaphore is a memory location accessible by the GPUs and the CPU
 // that's used for synchronization among them.

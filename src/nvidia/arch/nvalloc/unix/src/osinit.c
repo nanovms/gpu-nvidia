@@ -665,10 +665,10 @@ osInitNvMapping(
     gpumgrSetParentGPU(pGpu, pGpu);
 
     NV_PRINTF(LEVEL_INFO, "device instance          : %d\n", *pDeviceReference);
-    NV_PRINTF(LEVEL_INFO, "NV regs using linear address  : 0x%p\n",
+    NV_PRINTF(LEVEL_INFO, "NV regs using linear address  : %p\n",
               pGpu->deviceMappings[SOC_DEV_MAPPING_DISP].gpuNvAddr);
     NV_PRINTF(LEVEL_INFO,
-              "NV fb using linear address  : 0x%p\n", pGpu->registerAccess.gpuFbAddr);
+              "NV fb using linear address  : %p\n", pGpu->registerAccess.gpuFbAddr);
 
     pGpu->setProperty(pGpu, PDB_PROP_GPU_ALTERNATE_TREE_ENABLED, NV_TRUE);
     pGpu->setProperty(pGpu, PDB_PROP_GPU_ALTERNATE_TREE_HANDLE_LOCKLESS, NV_FALSE);
@@ -1096,12 +1096,12 @@ RmSetupRegisters(
     NV_DEV_PRINTF(NV_DBG_SETUP, nv, "RmSetupRegisters for 0x%x:0x%x\n",
               nv->pci_info.vendor_id, nv->pci_info.device_id);
     NV_DEV_PRINTF(NV_DBG_SETUP, nv, "pci config info:\n");
-    NV_DEV_PRINTF(NV_DBG_SETUP, nv, "   registers look  like: " NvP64_fmt " " NvP64_fmt,
+    NV_DEV_PRINTF(NV_DBG_SETUP, nv, "   registers look  like: " NvP64_fmt " " NvP64_fmt "\n",
               nv->regs->cpu_address, nv->regs->size);
 
     if (nv->fb != NULL)
     {
-        NV_DEV_PRINTF(NV_DBG_SETUP, nv, "   fb        looks like: " NvP64_fmt " " NvP64_fmt,
+        NV_DEV_PRINTF(NV_DBG_SETUP, nv, "   fb        looks like: " NvP64_fmt " " NvP64_fmt "\n",
                 nv->fb->cpu_address, nv->fb->size);
     }
 
@@ -1115,7 +1115,7 @@ RmSetupRegisters(
     }
     NV_DEV_PRINTF(NV_DBG_SETUP, nv, "Successfully mapped framebuffer and registers\n");
     NV_DEV_PRINTF(NV_DBG_SETUP, nv, "final mappings:\n");
-    NV_DEV_PRINTF(NV_DBG_SETUP, nv, "    regs: " NvP64_fmt " " NvP64_fmt " 0x%p\n",
+    NV_DEV_PRINTF(NV_DBG_SETUP, nv, "    regs: " NvP64_fmt " " NvP64_fmt " %p\n",
               nv->regs->cpu_address, nv->regs->size, nv->regs->map);
 
     ret = RmSetupDpauxRegisters(nv, status);

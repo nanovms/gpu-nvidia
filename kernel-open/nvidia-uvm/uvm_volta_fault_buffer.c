@@ -21,7 +21,7 @@
 
 *******************************************************************************/
 
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_global.h"
 #include "uvm_gpu.h"
 #include "uvm_hal.h"
@@ -242,12 +242,9 @@ static void parse_fault_entry_common(uvm_parent_gpu_t *parent_gpu,
                                      NvU32 *fault_entry,
                                      uvm_fault_buffer_entry_t *buffer_entry)
 {
-    NV_STATUS status;
     NvU64 addr_hi, addr_lo;
     NvU64 timestamp_hi, timestamp_lo;
     bool replayable_fault_enabled;
-
-    status = NV_OK;
 
     addr_hi = READ_HWVALUE_MW(fault_entry, C369, BUF_ENTRY, INST_HI);
     addr_lo = READ_HWVALUE_MW(fault_entry, C369, BUF_ENTRY, INST_LO);

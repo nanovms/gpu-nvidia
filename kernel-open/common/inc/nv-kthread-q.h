@@ -24,18 +24,7 @@
 #ifndef __NV_KTHREAD_QUEUE_H__
 #define __NV_KTHREAD_QUEUE_H__
 
-#include <linux/types.h>            // atomic_t
-#include <linux/list.h>             // list
-#include <linux/sched.h>            // task_struct
-#include <linux/numa.h>             // NUMA_NO_NODE
-
 #include "conftest.h"
-
-#if defined(NV_LINUX_SEMAPHORE_H_PRESENT)
-    #include <linux/semaphore.h>
-#else
-    #include <asm/semaphore.h>
-#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 // nv_kthread_q:
@@ -97,7 +86,7 @@ typedef void (*nv_q_func_t)(void *args);
 
 struct nv_kthread_q
 {
-    struct list_head q_list_head;
+    struct list q_list_head;
     spinlock_t q_lock;
 
     // This is a counting semaphore. It gets incremented and decremented
@@ -105,12 +94,12 @@ struct nv_kthread_q
     struct semaphore q_sem;
     atomic_t main_loop_should_exit;
 
-    struct task_struct *q_kthread;
+    context ctx;
 };
 
 struct nv_kthread_q_item
 {
-    struct list_head q_list_node;
+    struct list q_list_node;
     nv_q_func_t function_to_run;
     void *function_args;
 };
