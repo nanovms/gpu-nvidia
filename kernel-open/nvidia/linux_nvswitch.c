@@ -333,15 +333,6 @@ nvswitch_os_get_device_count
     return NV_ATOMIC_READ(nvswitch.count);
 }
 
-static char tolower(char c)
-{
-    if ((c < 'A') || (c > 'Z'))
-    {
-        return c;
-    }
-    return c - 'A' + 'a';
-}
-
 //
 // A helper to convert a string to an unsigned int.
 //

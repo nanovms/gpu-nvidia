@@ -86,8 +86,8 @@ static NV_STATUS uvm_api_pageable_mem_access(UVM_PAGEABLE_MEM_ACCESS_PARAMS *par
     return NV_OK;
 }
 
-define_closure_function(0, 2, sysreturn, uvm_mmap,
-                        vmap, vma, u64, offset)
+closure_func_basic(fdesc_mmap, sysreturn, uvm_mmap,
+                   vmap vma, u64 offset)
 {
     uvm_fd filp = struct_from_field(closure_self(), uvm_fd, mmap);
     uvm_va_space_t *va_space = uvm_va_space_get(filp);
@@ -170,8 +170,8 @@ out:
     return ret;
 }
 
-define_closure_function(0, 2, sysreturn, uvm_ioctl,
-                        unsigned long, cmd, vlist, ap)
+closure_func_basic(fdesc_ioctl, sysreturn, uvm_ioctl,
+                   unsigned long cmd, vlist ap)
 {
     uvm_fd filp = struct_from_field(closure_self(), uvm_fd, ioctl);
 
@@ -225,8 +225,8 @@ define_closure_function(0, 2, sysreturn, uvm_ioctl,
     return ioctl_generic(&filp->f->f, cmd, ap);
 }
 
-define_closure_function(0, 2, sysreturn, uvm_close,
-                        thread, t, io_completion, completion)
+closure_func_basic(fdesc_close, sysreturn, uvm_close,
+                   context ctx, io_completion completion)
 {
     uvm_fd filp = struct_from_field(closure_self(), uvm_fd, close);
     uvm_va_space_t *va_space = uvm_va_space_get(filp);
@@ -234,7 +234,7 @@ define_closure_function(0, 2, sysreturn, uvm_close,
     uvm_va_space_destroy(va_space);
     NV_KFREE(filp, sizeof(*filp));
 
-    return io_complete(completion, t, 0);
+    return io_complete(completion, 0);
 }
 
 closure_function(0, 1, sysreturn, uvm_open,
@@ -248,9 +248,9 @@ closure_function(0, 1, sysreturn, uvm_open,
         return -ENOMEM;
     status = uvm_global_get_status();
     if (status == NV_OK) {
-        f->f.ioctl = init_closure(&fd->ioctl, uvm_ioctl);
-        f->f.mmap = init_closure(&fd->mmap, uvm_mmap);
-        f->f.close = init_closure(&fd->close, uvm_close);
+        f->f.ioctl = init_closure_func(&fd->ioctl, fdesc_ioctl, uvm_ioctl);
+        f->f.mmap = init_closure_func(&fd->mmap, fdesc_mmap, uvm_mmap);
+        f->f.close = init_closure_func(&fd->close, fdesc_close, uvm_close);
         fd->f = f;
         status = uvm_va_space_create(fd);
     }

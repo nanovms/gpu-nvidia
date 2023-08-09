@@ -171,15 +171,11 @@ typedef struct
     NvU64 *timestamp_gpu_addr;
 } map_remote_data_t;
 
-declare_closure_struct(0, 2, sysreturn, uvm_tools_ioctl,
-                       unsigned long, request, vlist, ap);
-declare_closure_struct(0, 2, sysreturn, uvm_tools_close,
-                        thread, t, io_completion, completion);
 typedef struct {
     file f;
     uvm_tools_event_tracker_t *tracker;
-    closure_struct(uvm_tools_ioctl, ioctl);
-    closure_struct(uvm_tools_close, close);
+    closure_struct(fdesc_ioctl, ioctl);
+    closure_struct(fdesc_close, close);
 } *uvm_tools_fd;
 
 static LIST_HEAD(g_tools_va_space_list);
@@ -585,8 +581,8 @@ static bool tools_is_migration_callback_needed(uvm_va_space_t *va_space)
            tools_is_counter_enabled(va_space, UvmCounterNameBytesXferHtD);
 }
 
-define_closure_function(0, 2, sysreturn, uvm_tools_close,
-                        thread, t, io_completion, completion)
+closure_func_basic(fdesc_close, sysreturn, uvm_tools_close,
+                   context ctx, io_completion completion)
 {
     uvm_tools_fd filp = struct_from_field(closure_self(), uvm_tools_fd, close);
     uvm_tools_event_tracker_t *event_tracker = tools_event_tracker(filp);
@@ -595,11 +591,11 @@ define_closure_function(0, 2, sysreturn, uvm_tools_close,
         destroy_event_tracker(event_tracker);
     }
     NV_KFREE(filp, sizeof(*filp));
-    return io_complete(completion, t, -nv_status_to_errno(uvm_global_get_status()));
+    return io_complete(completion, -nv_status_to_errno(uvm_global_get_status()));
 }
 
-define_closure_function(0, 2, sysreturn, uvm_tools_ioctl,
-                 unsigned long, cmd, vlist, ap)
+closure_func_basic(fdesc_ioctl, sysreturn, uvm_tools_ioctl,
+                   unsigned long cmd, vlist ap)
 {
     uvm_tools_fd filp = struct_from_field(closure_self(), uvm_tools_fd, ioctl);
 
@@ -619,8 +615,8 @@ closure_function(0, 1, sysreturn, uvm_tools_open,
     NV_KMALLOC(fd, sizeof(*fd));
     if (!fd)
         return -ENOMEM;
-    f->f.ioctl = init_closure(&fd->ioctl, uvm_tools_ioctl);
-    f->f.close = init_closure(&fd->close, uvm_tools_close);
+    f->f.ioctl = init_closure_func(&fd->ioctl, fdesc_ioctl, uvm_tools_ioctl);
+    f->f.close = init_closure_func(&fd->close, fdesc_close, uvm_tools_close);
     fd->tracker = 0;
     fd->f = f;
     return 0;

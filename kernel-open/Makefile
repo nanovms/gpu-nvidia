@@ -74,7 +74,7 @@ INCLUDES= \
 	-I$(SRCDIR)/net \
 	-I$(SRCDIR)/runtime \
 	-I$(SRCDIR)/unix \
-	-I$(SRCDIR)/tfs \
+	-I$(SRCDIR)/fs \
 	-Icommon/inc \
 
 CFLAGS+=	$(KERNCFLAGS) -O3 $(INCLUDES) -fPIC $(DEFINES)

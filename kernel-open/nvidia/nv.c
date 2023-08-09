@@ -1429,8 +1429,8 @@ out:
     return rc;
 }
 
-define_closure_function(0, 2, sysreturn, nvfd_ioctl,
-                        unsigned long, request, vlist, ap)
+closure_func_basic(fdesc_ioctl, sysreturn, nvfd_ioctl,
+                   unsigned long request, vlist ap)
 {
     nvfd nvlfp = struct_from_field(closure_self(), nvfd, ioctl);
     if (IOC_TYPE(request) != NV_IOCTL_MAGIC)
@@ -1730,8 +1730,8 @@ done:
     return status;
 }
 
-define_closure_function(0, 1, u32, nvfd_events,
-                 thread, t)
+closure_func_basic(fdesc_events, u32, nvfd_events,
+                   thread t)
 {
     nvfd nvlfp = struct_from_field(closure_self(), nvfd, events);
     u32 mask = 0;
@@ -1750,8 +1750,8 @@ define_closure_function(0, 1, u32, nvfd_events,
     return mask;
 }
 
-define_closure_function(0, 2, sysreturn, nvfd_mmap,
-                        vmap, vm, u64, offset)
+closure_func_basic(fdesc_mmap, sysreturn, nvfd_mmap,
+                   vmap vm, u64 offset)
 {
     nvfd nvlfp = struct_from_field(closure_self(), nvfd, mmap);
     nv_nanos_state_t *nvl = nvlfp->nvptr;
@@ -1840,8 +1840,8 @@ nvidia_close_callback(
     nv_kmem_cache_free_stack(sp);
 }
 
-define_closure_function(0, 2, sysreturn, nvfd_close,
-                        thread, t, io_completion, completion)
+closure_func_basic(fdesc_close, sysreturn, nvfd_close,
+                   context ctx, io_completion completion)
 {
     nvfd nvlfp = struct_from_field(closure_self(), nvfd, close);
     nv_nanos_state_t *nvl = nvlfp->nvptr;
@@ -1859,7 +1859,7 @@ define_closure_function(0, 2, sysreturn, nvfd_close,
     {
         nvidia_close_callback(nvlfp);
     }
-    return io_complete(completion, t, rc);
+    return io_complete(completion, rc);
 }
 
 static sysreturn nvfd_open(u32 minor, file f)
@@ -1906,10 +1906,10 @@ static sysreturn nvfd_open(u32 minor, file f)
     nvlfp->sp = sp;
     nvlfp->rdev = makedev(NV_MAJOR_DEVICE_NUMBER, minor);
     nvlfp->f = f;
-    f->f.ioctl = init_closure(&nvlfp->ioctl, nvfd_ioctl);
-    f->f.events = init_closure(&nvlfp->events, nvfd_events);
-    f->f.mmap = init_closure(&nvlfp->mmap, nvfd_mmap);
-    f->f.close = init_closure(&nvlfp->close, nvfd_close);
+    f->f.ioctl = init_closure_func(&nvlfp->ioctl, fdesc_ioctl, nvfd_ioctl);
+    f->f.events = init_closure_func(&nvlfp->events, fdesc_events, nvfd_events);
+    f->f.mmap = init_closure_func(&nvlfp->mmap, fdesc_mmap, nvfd_mmap);
+    f->f.close = init_closure_func(&nvlfp->close, fdesc_close, nvfd_close);
 
     /* for control device, just jump to its open routine */
     /* after setting up the private data */

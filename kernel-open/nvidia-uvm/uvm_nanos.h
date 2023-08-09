@@ -561,18 +561,12 @@ static inline void wake_up_bit(void *word, int bit)
 {
 }
 
-declare_closure_struct(0, 2, sysreturn, uvm_ioctl,
-                       unsigned long, request, vlist, ap);
-declare_closure_struct(0, 2, sysreturn, uvm_mmap,
-                       vmap, vm, u64, offset);
-declare_closure_struct(0, 2, sysreturn, uvm_close,
-                        thread, t, io_completion, completion);
 typedef struct uvm_fd {
     file f;
     uvm_va_space_t *va_space;
-    closure_struct(uvm_ioctl, ioctl);
-    closure_struct(uvm_mmap, mmap);
-    closure_struct(uvm_close, close);
+    closure_struct(fdesc_ioctl, ioctl);
+    closure_struct(fdesc_mmap, mmap);
+    closure_struct(fdesc_close, close);
 } *uvm_fd;
 
 typedef struct

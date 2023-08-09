@@ -202,17 +202,6 @@ static inline void sema_init(struct semaphore *sema, int val)
     spin_lock_init(&sema->lock);
 }
 
-static inline void mutex_init(mutex m, u64 spin_iterations)
-{
-    m->spin_iterations = spin_iterations;
-    m->turn = 0;
-    m->mcs_tail = 0;
-    m->mcs_spinouts = 0;
-    m->acquire_spinouts = 0;
-    spin_lock_init(&m->waiters_lock);
-    list_init(&m->waiters);
-}
-
 #include "nv-kthread-q.h"
 #include "nv-lock.h"
 
@@ -746,20 +735,12 @@ typedef enum
     NV_FOPS_STACK_INDEX_COUNT
 } nvidia_entry_point_index_t;
 
-declare_closure_struct(0, 2, sysreturn, nvfd_ioctl,
-                       unsigned long, request, vlist, ap);
-declare_closure_struct(0, 1, u32, nvfd_events,
-                       thread, t);
-declare_closure_struct(0, 2, sysreturn, nvfd_mmap,
-                       vmap, vm, u64, offset);
-declare_closure_struct(0, 2, sysreturn, nvfd_close,
-                       thread, t, io_completion, completion);
 typedef struct nvfd {
     file f;
-    closure_struct(nvfd_ioctl, ioctl);
-    closure_struct(nvfd_events, events);
-    closure_struct(nvfd_mmap, mmap);
-    closure_struct(nvfd_close, close);
+    closure_struct(fdesc_ioctl, ioctl);
+    closure_struct(fdesc_events, events);
+    closure_struct(fdesc_mmap, mmap);
+    closure_struct(fdesc_close, close);
     nv_file_private_t nvfp;
     nvidia_stack_t *sp;
     nvidia_stack_t *fops_sp[NV_FOPS_STACK_INDEX_COUNT];
