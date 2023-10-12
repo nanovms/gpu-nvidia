@@ -25,7 +25,7 @@
 #include "uvm_gpu.h"
 #include "uvm_global.h"
 #include "uvm_kvmalloc.h"
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "nv_uvm_interface.h"
 
 bool uvm_rm_mem_mapped_on_gpu(uvm_rm_mem_t *rm_mem, uvm_gpu_t *gpu)

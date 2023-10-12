@@ -43,8 +43,6 @@
 #include "rmapi/rs_utils.h"
 #include "rmapi/rmapi.h"
 
-#include <stddef.h> // NULL
-
 /**
  * Kernel-space deprecated control conversion.
  * A conversion here is applicable to all RM clients on most platforms.

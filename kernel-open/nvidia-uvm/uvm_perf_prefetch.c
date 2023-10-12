@@ -21,7 +21,7 @@
 
 *******************************************************************************/
 
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_perf_events.h"
 #include "uvm_perf_module.h"
 #include "uvm_perf_prefetch.h"
@@ -527,25 +527,6 @@ NV_STATUS uvm_perf_prefetch_init(void)
 
         g_uvm_perf_prefetch_min_faults = UVM_PREFETCH_MIN_FAULTS_DEFAULT;
     }
-
-    return NV_OK;
-}
-
-NV_STATUS uvm_test_set_page_prefetch_policy(UVM_TEST_SET_PAGE_PREFETCH_POLICY_PARAMS *params, struct file *filp)
-{
-    uvm_va_space_t *va_space = uvm_va_space_get(filp);
-
-    if (params->policy >= UVM_TEST_PAGE_PREFETCH_POLICY_MAX)
-        return NV_ERR_INVALID_ARGUMENT;
-
-    uvm_va_space_down_write(va_space);
-
-    if (params->policy == UVM_TEST_PAGE_PREFETCH_POLICY_ENABLE)
-        va_space->test.page_prefetch_enabled = true;
-    else
-        va_space->test.page_prefetch_enabled = false;
-
-    uvm_va_space_up_write(va_space);
 
     return NV_OK;
 }

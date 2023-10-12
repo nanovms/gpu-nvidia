@@ -143,7 +143,7 @@ NV_STATUS uvm_va_range_map_rm_allocation(uvm_va_range_t *va_range,
 // responsible for making sure that mapping gpu is retained across those calls.
 void uvm_ext_gpu_map_destroy(uvm_va_range_t *va_range,
                              uvm_ext_gpu_map_t *ext_gpu_map,
-                             struct list_head *deferred_free_list);
+                             struct list *deferred_free_list);
 
 // Deferred free function which frees the RM handle and the object itself.
 void uvm_ext_gpu_map_free(uvm_ext_gpu_map_t *ext_gpu_map);

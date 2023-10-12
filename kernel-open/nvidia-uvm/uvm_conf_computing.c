@@ -222,12 +222,10 @@ static NV_STATUS conf_computing_dma_buffer_pool_init(uvm_conf_computing_dma_buff
 static NV_STATUS dma_buffer_pool_expand_locked(uvm_conf_computing_dma_buffer_pool_t *dma_buffer_pool)
 {
     size_t i;
-    uvm_gpu_t *gpu;
     size_t nb_to_alloc;
     NV_STATUS status = NV_OK;
     UVM_ASSERT(dma_buffer_pool->num_dma_buffers > 0);
 
-    gpu = dma_buffer_pool_to_gpu(dma_buffer_pool);
     nb_to_alloc = dma_buffer_pool->num_dma_buffers;
     for (i = 0; i < nb_to_alloc; ++i) {
         uvm_conf_computing_dma_buffer_t *dma_buffer;

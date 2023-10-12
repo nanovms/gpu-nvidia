@@ -24,7 +24,7 @@
 #ifndef _NV_RSYNC_H_
 #define _NV_RSYNC_H_
 
-#include "nv-linux.h"
+#include "nv-nanos.h"
 
 typedef struct nv_rsync_info
 {

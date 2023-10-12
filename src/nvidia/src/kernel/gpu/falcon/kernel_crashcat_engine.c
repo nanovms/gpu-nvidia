@@ -141,19 +141,6 @@ void kcrashcatEngineVprintf_IMPL
     //
     if (bReportStart)
     {
-        va_list argsCopy;
-
-        //
-        // Prefix the engine name to the format string.
-        // nvErrorLog() appends a newline, so we don't add one here.
-        //
-        nvDbgSnprintf(pKernelCrashCatEng->fmtBuffer, MAX_ERROR_STRING, "%s %s",
-                      pKernelCrashCatEng->pName, fmt);
-
-        va_copy(argsCopy, args);
-        nvErrorLog(pKernelCrashCatEng->pGpu, pKernelCrashCatEng->errorId,
-                   pKernelCrashCatEng->fmtBuffer, argsCopy);
-        va_end(argsCopy);
     }
 
     // portDbgPrintString/NVLOG_PRINTF don't add a newline, so add one here

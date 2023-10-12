@@ -22,7 +22,7 @@
 *******************************************************************************/
 
 #include "uvm_common.h"
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_types.h"
 #include "uvm_api.h"
 #include "uvm_hal.h"
@@ -34,8 +34,8 @@
 #include "uvm_conf_computing.h"
 #include "nv_uvm_interface.h"
 
-static struct kmem_cache *g_uvm_va_range_cache __read_mostly;
-static struct kmem_cache *g_uvm_vma_wrapper_cache __read_mostly;
+static heap g_uvm_va_range_cache __read_mostly;
+static heap g_uvm_vma_wrapper_cache __read_mostly;
 
 NV_STATUS uvm_va_range_init(void)
 {
@@ -185,16 +185,16 @@ NV_STATUS uvm_va_range_create_mmap(uvm_va_space_t *va_space,
                                    uvm_va_range_t **out_va_range)
 {
     NV_STATUS status;
-    struct vm_area_struct *vma = vma_wrapper->vma;
+    vmap vma = vma_wrapper->vma;
     uvm_va_range_t *va_range = NULL;
 
     // Check for no overlap with HMM blocks.
-    status = uvm_hmm_va_block_reclaim(va_space, mm, vma->vm_start, vma->vm_end - 1);
+    status = uvm_hmm_va_block_reclaim(va_space, mm, vma->node.r.start, vma->node.r.end - 1);
     if (status != NV_OK)
         return status;
 
     // vma->vm_end is exclusive but va_range end is inclusive
-    va_range = uvm_va_range_alloc_managed(va_space, vma->vm_start, vma->vm_end - 1);
+    va_range = uvm_va_range_alloc_managed(va_space, vma->node.r.start, vma->node.r.end - 1);
     if (!va_range) {
         status = NV_ERR_NO_MEMORY;
         goto error;
@@ -436,7 +436,7 @@ static void uvm_va_range_destroy_managed(uvm_va_range_t *va_range)
     UVM_ASSERT(status == NV_OK);
 }
 
-static void uvm_va_range_destroy_external(uvm_va_range_t *va_range, struct list_head *deferred_free_list)
+static void uvm_va_range_destroy_external(uvm_va_range_t *va_range, struct list *deferred_free_list)
 {
     uvm_gpu_t *gpu;
 
@@ -506,7 +506,7 @@ static void uvm_va_range_destroy_semaphore_pool(uvm_va_range_t *va_range)
     va_range->semaphore_pool.mem = NULL;
 }
 
-void uvm_va_range_destroy(uvm_va_range_t *va_range, struct list_head *deferred_free_list)
+void uvm_va_range_destroy(uvm_va_range_t *va_range, struct list *deferred_free_list)
 {
     if (!va_range)
         return;
@@ -553,7 +553,7 @@ void uvm_va_range_zombify(uvm_va_range_t *va_range)
     va_range->managed.vma_wrapper = NULL;
 }
 
-NV_STATUS uvm_api_clean_up_zombie_resources(UVM_CLEAN_UP_ZOMBIE_RESOURCES_PARAMS *params, struct file *filp)
+NV_STATUS uvm_api_clean_up_zombie_resources(UVM_CLEAN_UP_ZOMBIE_RESOURCES_PARAMS *params, fdesc filp)
 {
     uvm_va_space_t *va_space = uvm_va_space_get(filp);
     uvm_va_range_t *va_range, *va_range_next;
@@ -570,7 +570,7 @@ NV_STATUS uvm_api_clean_up_zombie_resources(UVM_CLEAN_UP_ZOMBIE_RESOURCES_PARAMS
     return NV_OK;
 }
 
-NV_STATUS uvm_api_validate_va_range(UVM_VALIDATE_VA_RANGE_PARAMS *params, struct file *filp)
+NV_STATUS uvm_api_validate_va_range(UVM_VALIDATE_VA_RANGE_PARAMS *params, fdesc filp)
 {
     NV_STATUS status = NV_ERR_INVALID_ADDRESS;
     uvm_va_space_t *va_space = uvm_va_space_get(filp);
@@ -702,7 +702,7 @@ static void va_range_remove_gpu_va_space_managed(uvm_va_range_t *va_range,
 
 static void va_range_remove_gpu_va_space_external(uvm_va_range_t *va_range,
                                                   uvm_gpu_t *gpu,
-                                                  struct list_head *deferred_free_list)
+                                                  struct list *deferred_free_list)
 {
     uvm_ext_gpu_range_tree_t *range_tree;
     uvm_ext_gpu_map_t *ext_map, *ext_map_next;
@@ -731,7 +731,7 @@ static void va_range_remove_gpu_va_space_semaphore_pool(uvm_va_range_t *va_range
 void uvm_va_range_remove_gpu_va_space(uvm_va_range_t *va_range,
                                       uvm_gpu_va_space_t *gpu_va_space,
                                       struct mm_struct *mm,
-                                      struct list_head *deferred_free_list)
+                                      struct list *deferred_free_list)
 {
     switch (va_range->type) {
         case UVM_VA_RANGE_TYPE_MANAGED:
@@ -827,7 +827,7 @@ NV_STATUS uvm_va_range_enable_peer(uvm_va_range_t *va_range, uvm_gpu_t *gpu0, uv
 static void uvm_va_range_disable_peer_external(uvm_va_range_t *va_range,
                                                uvm_gpu_t *mapping_gpu,
                                                uvm_gpu_t *owning_gpu,
-                                               struct list_head *deferred_free_list)
+                                               struct list *deferred_free_list)
 {
     uvm_ext_gpu_range_tree_t *range_tree;
     uvm_ext_gpu_map_t *ext_map, *ext_map_next;
@@ -886,7 +886,7 @@ static void uvm_va_range_disable_peer_managed(uvm_va_range_t *va_range, uvm_gpu_
 void uvm_va_range_disable_peer(uvm_va_range_t *va_range,
                                uvm_gpu_t *gpu0,
                                uvm_gpu_t *gpu1,
-                               struct list_head *deferred_free_list)
+                               struct list *deferred_free_list)
 {
 
     switch (va_range->type) {
@@ -955,7 +955,7 @@ static void va_range_unregister_gpu_managed(uvm_va_range_t *va_range, uvm_gpu_t 
 // unmap those.
 static void va_range_unregister_gpu_external(uvm_va_range_t *va_range,
                                              uvm_gpu_t *gpu,
-                                             struct list_head *deferred_free_list)
+                                             struct list *deferred_free_list)
 {
     uvm_ext_gpu_map_t *ext_map, *ext_map_next;
     uvm_gpu_t *other_gpu;
@@ -1000,7 +1000,7 @@ static void va_range_unregister_gpu_semaphore_pool(uvm_va_range_t *va_range, uvm
 void uvm_va_range_unregister_gpu(uvm_va_range_t *va_range,
                                  uvm_gpu_t *gpu,
                                  struct mm_struct *mm,
-                                 struct list_head *deferred_free_list)
+                                 struct list *deferred_free_list)
 {
     switch (va_range->type) {
         case UVM_VA_RANGE_TYPE_MANAGED:
@@ -1682,7 +1682,7 @@ NV_STATUS uvm_va_range_unset_read_duplication(uvm_va_range_t *va_range, struct m
     return NV_OK;
 }
 
-uvm_vma_wrapper_t *uvm_vma_wrapper_alloc(struct vm_area_struct *vma)
+uvm_vma_wrapper_t *uvm_vma_wrapper_alloc(vmap vma)
 {
     uvm_vma_wrapper_t *vma_wrapper = nv_kmem_cache_zalloc(g_uvm_vma_wrapper_cache, NV_UVM_GFP_FLAGS);
     if (!vma_wrapper)
@@ -1718,13 +1718,11 @@ static NV_STATUS uvm_map_sked_reflected_range(uvm_va_space_t *va_space, UVM_MAP_
     uvm_gpu_t *gpu;
     uvm_gpu_va_space_t *gpu_va_space;
     uvm_page_tree_t *page_tables;
-    struct mm_struct *mm;
 
     if (uvm_api_range_invalid_4k(params->base, params->length))
         return NV_ERR_INVALID_ADDRESS;
 
     // The mm needs to be locked in order to remove stale HMM va_blocks.
-    mm = uvm_va_space_mm_or_current_retain_lock(va_space);
     uvm_va_space_down_write(va_space);
 
     gpu = uvm_va_space_get_gpu_by_uuid_with_gpu_va_space(va_space, &params->gpuUuid);
@@ -1750,7 +1748,7 @@ static NV_STATUS uvm_map_sked_reflected_range(uvm_va_space_t *va_space, UVM_MAP_
         goto done;
     }
 
-    status = uvm_va_range_create_sked_reflected(va_space, mm, params->base, params->length, &va_range);
+    status = uvm_va_range_create_sked_reflected(va_space, 0, params->base, params->length, &va_range);
     if (status != NV_OK) {
         UVM_DBG_PRINT_RL("Failed to create sked reflected VA range [0x%llx, 0x%llx)\n",
                 params->base, params->base + params->length);
@@ -1779,12 +1777,11 @@ done:
         uvm_va_range_destroy(va_range, NULL);
 
     uvm_va_space_up_write(va_space);
-    uvm_va_space_mm_or_current_release_unlock(va_space, mm);
 
     return status;
 }
 
-NV_STATUS uvm_api_map_dynamic_parallelism_region(UVM_MAP_DYNAMIC_PARALLELISM_REGION_PARAMS *params, struct file *filp)
+NV_STATUS uvm_api_map_dynamic_parallelism_region(UVM_MAP_DYNAMIC_PARALLELISM_REGION_PARAMS *params, fdesc filp)
 {
     uvm_va_space_t *va_space = uvm_va_space_get(filp);
 
@@ -1794,13 +1791,12 @@ NV_STATUS uvm_api_map_dynamic_parallelism_region(UVM_MAP_DYNAMIC_PARALLELISM_REG
     return uvm_map_sked_reflected_range(va_space, params);
 }
 
-NV_STATUS uvm_api_alloc_semaphore_pool(UVM_ALLOC_SEMAPHORE_POOL_PARAMS *params, struct file *filp)
+NV_STATUS uvm_api_alloc_semaphore_pool(UVM_ALLOC_SEMAPHORE_POOL_PARAMS *params, fdesc filp)
 {
     NV_STATUS status;
     uvm_va_space_t *va_space = uvm_va_space_get(filp);
     uvm_va_range_t *va_range = NULL;
     uvm_gpu_t *gpu;
-    struct mm_struct *mm;
 
     if (uvm_api_range_invalid(params->base, params->length))
         return NV_ERR_INVALID_ADDRESS;
@@ -1810,12 +1806,10 @@ NV_STATUS uvm_api_alloc_semaphore_pool(UVM_ALLOC_SEMAPHORE_POOL_PARAMS *params, 
     if (g_uvm_global.conf_computing_enabled && params->gpuAttributesCount == 0)
         return NV_ERR_INVALID_ARGUMENT;
 
-    // The mm needs to be locked in order to remove stale HMM va_blocks.
-    mm = uvm_va_space_mm_or_current_retain_lock(va_space);
     uvm_va_space_down_write(va_space);
 
     status = uvm_va_range_create_semaphore_pool(va_space,
-                                                mm,
+                                                NULL,
                                                 params->base,
                                                 params->length,
                                                 params->perGpuAttributes,
@@ -1843,177 +1837,5 @@ done:
 
 unlock:
     uvm_va_space_up_write(va_space);
-    uvm_va_space_mm_or_current_release_unlock(va_space, mm);
     return status;
 }
-
-NV_STATUS uvm_test_va_range_info(UVM_TEST_VA_RANGE_INFO_PARAMS *params, struct file *filp)
-{
-    uvm_va_space_t *va_space;
-    uvm_va_range_t *va_range;
-    uvm_processor_id_t processor_id;
-    struct vm_area_struct *vma;
-    NV_STATUS status = NV_OK;
-    struct mm_struct *mm;
-
-    va_space = uvm_va_space_get(filp);
-
-    mm = uvm_va_space_mm_or_current_retain_lock(va_space);
-    uvm_va_space_down_read(va_space);
-
-    va_range = uvm_va_range_find(va_space, params->lookup_address);
-    if (!va_range) {
-        status = uvm_hmm_va_range_info(va_space, mm, params);
-        goto out;
-    }
-
-    params->va_range_start = va_range->node.start;
-    params->va_range_end   = va_range->node.end;
-
-    // -Wall implies -Wenum-compare, so cast through int to avoid warnings
-    BUILD_BUG_ON((int)UVM_READ_DUPLICATION_UNSET    != (int)UVM_TEST_READ_DUPLICATION_UNSET);
-    BUILD_BUG_ON((int)UVM_READ_DUPLICATION_ENABLED  != (int)UVM_TEST_READ_DUPLICATION_ENABLED);
-    BUILD_BUG_ON((int)UVM_READ_DUPLICATION_DISABLED != (int)UVM_TEST_READ_DUPLICATION_DISABLED);
-    BUILD_BUG_ON((int)UVM_READ_DUPLICATION_MAX      != (int)UVM_TEST_READ_DUPLICATION_MAX);
-    params->read_duplication = uvm_va_range_get_policy(va_range)->read_duplication;
-
-    if (UVM_ID_IS_INVALID(uvm_va_range_get_policy(va_range)->preferred_location))
-        memset(&params->preferred_location, 0, sizeof(params->preferred_location));
-    else
-        uvm_va_space_processor_uuid(va_space,
-                                    &params->preferred_location,
-                                    uvm_va_range_get_policy(va_range)->preferred_location);
-
-    params->accessed_by_count = 0;
-    for_each_id_in_mask(processor_id, &uvm_va_range_get_policy(va_range)->accessed_by)
-        uvm_va_space_processor_uuid(va_space, &params->accessed_by[params->accessed_by_count++], processor_id);
-
-    // -Wall implies -Wenum-compare, so cast through int to avoid warnings
-    BUILD_BUG_ON((int)UVM_TEST_VA_RANGE_TYPE_INVALID        != (int)UVM_VA_RANGE_TYPE_INVALID);
-    BUILD_BUG_ON((int)UVM_TEST_VA_RANGE_TYPE_MANAGED        != (int)UVM_VA_RANGE_TYPE_MANAGED);
-    BUILD_BUG_ON((int)UVM_TEST_VA_RANGE_TYPE_EXTERNAL       != (int)UVM_VA_RANGE_TYPE_EXTERNAL);
-    BUILD_BUG_ON((int)UVM_TEST_VA_RANGE_TYPE_CHANNEL        != (int)UVM_VA_RANGE_TYPE_CHANNEL);
-    BUILD_BUG_ON((int)UVM_TEST_VA_RANGE_TYPE_SKED_REFLECTED != (int)UVM_VA_RANGE_TYPE_SKED_REFLECTED);
-    BUILD_BUG_ON((int)UVM_TEST_VA_RANGE_TYPE_SEMAPHORE_POOL != (int)UVM_VA_RANGE_TYPE_SEMAPHORE_POOL);
-    BUILD_BUG_ON((int)UVM_TEST_VA_RANGE_TYPE_MAX            != (int)UVM_VA_RANGE_TYPE_MAX);
-    params->type = va_range->type;
-
-    switch (va_range->type) {
-        case UVM_VA_RANGE_TYPE_MANAGED:
-
-            params->managed.subtype = UVM_TEST_RANGE_SUBTYPE_UVM;
-            if (!va_range->managed.vma_wrapper) {
-                params->managed.is_zombie = NV_TRUE;
-                goto out;
-            }
-            params->managed.is_zombie = NV_FALSE;
-            vma = uvm_va_range_vma_check(va_range, mm);
-            if (!vma) {
-                // We aren't in the same mm as the one which owns the vma, and
-                // we don't have that mm locked.
-                params->managed.owned_by_calling_process = NV_FALSE;
-                goto out;
-            }
-            params->managed.owned_by_calling_process = (mm == current->mm ? NV_TRUE : NV_FALSE);
-            params->managed.vma_start = vma->vm_start;
-            params->managed.vma_end   = vma->vm_end - 1;
-            break;
-        default:
-            break;
-    }
-
-out:
-    uvm_va_space_up_read(va_space);
-    uvm_va_space_mm_or_current_release_unlock(va_space, mm);
-    return status;
-}
-
-NV_STATUS uvm_test_va_range_split(UVM_TEST_VA_RANGE_SPLIT_PARAMS *params, struct file *filp)
-{
-    uvm_va_space_t *va_space = uvm_va_space_get(filp);
-    uvm_va_range_t *va_range;
-    NV_STATUS status = NV_OK;
-
-    if (!PAGE_ALIGNED(params->split_address + 1))
-        return NV_ERR_INVALID_ADDRESS;
-
-    uvm_va_space_down_write(va_space);
-
-    va_range = uvm_va_range_find(va_space, params->split_address);
-    if (!va_range ||
-        va_range->node.end == params->split_address ||
-        va_range->type != UVM_VA_RANGE_TYPE_MANAGED) {
-        status = NV_ERR_INVALID_ADDRESS;
-        goto out;
-    }
-
-    status = uvm_va_range_split(va_range, params->split_address, NULL);
-
-out:
-    uvm_va_space_up_write(va_space);
-    return status;
-}
-
-NV_STATUS uvm_test_va_range_inject_split_error(UVM_TEST_VA_RANGE_INJECT_SPLIT_ERROR_PARAMS *params, struct file *filp)
-{
-    uvm_va_space_t *va_space = uvm_va_space_get(filp);
-    uvm_va_range_t *va_range;
-    struct mm_struct *mm;
-    NV_STATUS status = NV_OK;
-
-    mm = uvm_va_space_mm_or_current_retain_lock(va_space);
-    uvm_va_space_down_write(va_space);
-
-    va_range = uvm_va_range_find(va_space, params->lookup_address);
-    if (!va_range) {
-        if (!mm)
-            status = NV_ERR_INVALID_ADDRESS;
-        else
-            status = uvm_hmm_test_va_block_inject_split_error(va_space, params->lookup_address);
-    }
-    else if (va_range->type != UVM_VA_RANGE_TYPE_MANAGED) {
-        status = NV_ERR_INVALID_ADDRESS;
-    }
-    else {
-        uvm_va_block_t *va_block;
-        size_t split_index;
-
-        va_range->inject_split_error = true;
-
-        split_index = uvm_va_range_block_index(va_range, params->lookup_address);
-        va_block = uvm_va_range_block(va_range, split_index);
-        if (va_block) {
-            uvm_va_block_test_t *block_test = uvm_va_block_get_test(va_block);
-
-            if (block_test)
-                block_test->inject_split_error = true;
-        }
-    }
-
-    uvm_va_space_up_write(va_space);
-    uvm_va_space_mm_or_current_release_unlock(va_space, mm);
-    return status;
-}
-
-NV_STATUS uvm_test_va_range_inject_add_gpu_va_space_error(UVM_TEST_VA_RANGE_INJECT_ADD_GPU_VA_SPACE_ERROR_PARAMS *params,
-                                                          struct file *filp)
-{
-    uvm_va_space_t *va_space = uvm_va_space_get(filp);
-    uvm_va_range_t *va_range;
-    NV_STATUS status = NV_OK;
-
-    uvm_va_space_down_write(va_space);
-
-    va_range = uvm_va_range_find(va_space, params->lookup_address);
-    if (!va_range) {
-        status = NV_ERR_INVALID_ADDRESS;
-        goto out;
-    }
-
-    va_range->inject_add_gpu_va_space_error = true;
-
-out:
-    uvm_va_space_up_write(va_space);
-    return status;
-}
-

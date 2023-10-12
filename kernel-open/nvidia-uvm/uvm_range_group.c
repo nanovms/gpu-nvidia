@@ -31,8 +31,8 @@
 #include "uvm_api.h"
 #include "uvm_test.h"
 
-static struct kmem_cache *g_uvm_range_group_cache __read_mostly;
-static struct kmem_cache *g_uvm_range_group_range_cache __read_mostly;
+static heap g_uvm_range_group_cache __read_mostly;
+static heap g_uvm_range_group_range_cache __read_mostly;
 
 NV_STATUS uvm_range_group_init(void)
 {
@@ -85,12 +85,11 @@ static void uvm_range_group_range_destroy(uvm_range_group_range_t *rgr)
     kmem_cache_free(g_uvm_range_group_range_cache, rgr);
 }
 
-NV_STATUS uvm_api_create_range_group(UVM_CREATE_RANGE_GROUP_PARAMS *params, struct file *filp)
+NV_STATUS uvm_api_create_range_group(UVM_CREATE_RANGE_GROUP_PARAMS *params, fdesc filp)
 {
     uvm_va_space_t *va_space = uvm_va_space_get(filp);
     uvm_range_group_t *range_group = NULL;
     NV_STATUS status = NV_OK;
-    int ret;
 
     range_group = nv_kmem_cache_zalloc(g_uvm_range_group_cache, NV_UVM_GFP_FLAGS);
     if (!range_group)
@@ -106,16 +105,10 @@ NV_STATUS uvm_api_create_range_group(UVM_CREATE_RANGE_GROUP_PARAMS *params, stru
 
     uvm_va_space_down_write(va_space);
 
-    ret = radix_tree_insert(&va_space->range_groups, range_group->id, range_group);
-    status = errno_to_nv_status(ret);
-    if (status != NV_OK) {
-        kmem_cache_free(g_uvm_range_group_cache, range_group);
-        goto done;
-    }
+    table_set(va_space->range_groups, pointer_from_u64(range_group->id), range_group);
 
     params->rangeGroupId = range_group->id;
 
-done:
     uvm_va_space_up_write(va_space);
 
     return status;
@@ -137,7 +130,7 @@ static void uvm_range_group_destroy(uvm_va_space_t *va_space, uvm_range_group_t 
     kmem_cache_free(g_uvm_range_group_cache, range_group);
 }
 
-NV_STATUS uvm_api_destroy_range_group(UVM_DESTROY_RANGE_GROUP_PARAMS *params, struct file *filp)
+NV_STATUS uvm_api_destroy_range_group(UVM_DESTROY_RANGE_GROUP_PARAMS *params, fdesc filp)
 {
     uvm_va_space_t *va_space = uvm_va_space_get(filp);
     uvm_range_group_t *range_group = NULL;
@@ -145,7 +138,7 @@ NV_STATUS uvm_api_destroy_range_group(UVM_DESTROY_RANGE_GROUP_PARAMS *params, st
 
     uvm_va_space_down_write(va_space);
 
-    range_group = radix_tree_delete(&va_space->range_groups, params->rangeGroupId);
+    range_group = table_remove(va_space->range_groups, pointer_from_u64(params->rangeGroupId));
     if (!range_group) {
         status = NV_ERR_OBJECT_NOT_FOUND;
         goto done;
@@ -161,12 +154,12 @@ done:
 void uvm_range_group_radix_tree_destroy(uvm_va_space_t *va_space)
 {
     uvm_range_group_t *range_group = NULL;
-    struct radix_tree_root *root = &va_space->range_groups;
+    table root = va_space->range_groups;
     NvU64 index = 1;
 
-    while (radix_tree_gang_lookup(root, (void**)&range_group, index, 1)) {
+    while ((range_group = table_find(root, pointer_from_u64(index)))) {
         UVM_ASSERT(range_group);
-        radix_tree_delete(root, range_group->id);
+        table_set(root, pointer_from_u64(range_group->id), 0);
         index = range_group->id + 1;
         uvm_range_group_destroy(va_space, range_group);
     }
@@ -292,7 +285,7 @@ NV_STATUS uvm_range_group_va_range_migrate(uvm_va_range_t *va_range,
     return status;
 }
 
-NV_STATUS uvm_api_set_range_group(UVM_SET_RANGE_GROUP_PARAMS *params, struct file *filp)
+NV_STATUS uvm_api_set_range_group(UVM_SET_RANGE_GROUP_PARAMS *params, fdesc filp)
 {
     uvm_va_space_t *va_space = uvm_va_space_get(filp);
     uvm_range_group_t *range_group = NULL;
@@ -316,7 +309,7 @@ NV_STATUS uvm_api_set_range_group(UVM_SET_RANGE_GROUP_PARAMS *params, struct fil
     has_va_space_write_lock = true;
 
     // Check that range group exists
-    range_group = radix_tree_lookup(&va_space->range_groups, params->rangeGroupId);
+    range_group = table_find(va_space->range_groups, pointer_from_u64(params->rangeGroupId));
     if (!range_group && (params->rangeGroupId != UVM_RANGE_GROUP_ID_NONE)) {
         status = NV_ERR_OBJECT_NOT_FOUND;
         goto done;
@@ -392,15 +385,19 @@ static NV_STATUS uvm_range_group_prevent_migration(uvm_range_group_t *range_grou
     // Move the range group's migrated_ranges list to the local_migrated_ranges
     // list and process it from there.
     uvm_spin_lock(&range_group->migrated_ranges_lock);
-    list_replace_init(&range_group->migrated_ranges, &local_migrated_ranges);
+    list_replace(&range_group->migrated_ranges, &local_migrated_ranges);
+    list_init(&range_group->migrated_ranges);
     uvm_spin_unlock(&range_group->migrated_ranges_lock);
 
     while (true) {
         // Delete each item from the beginning of the list.
         uvm_spin_lock(&range_group->migrated_ranges_lock);
-        rgr = list_first_entry_or_null(&local_migrated_ranges,
+        if (!list_empty(&local_migrated_ranges))
+            rgr = list_first_entry(&local_migrated_ranges,
                                        uvm_range_group_range_t,
                                        range_group_migrated_list_node);
+        else
+            rgr = 0;
         if (rgr)
             list_del_init(&rgr->range_group_migrated_list_node);
         uvm_spin_unlock(&range_group->migrated_ranges_lock);
@@ -455,7 +452,16 @@ done:
         uvm_spin_lock(&range_group->migrated_ranges_lock);
         if (rgr)
             list_move_tail(&rgr->range_group_migrated_list_node, &range_group->migrated_ranges);
-        list_splice_tail(&local_migrated_ranges, &range_group->migrated_ranges);
+        if (!list_empty(&local_migrated_ranges)) {
+            list back = list_end(&range_group->migrated_ranges)->prev;
+            list first = list_begin(&local_migrated_ranges);
+            list last = list_end(&local_migrated_ranges)->prev;
+
+            back->next = first;
+            first->prev = back;
+            range_group->migrated_ranges.prev = last;
+            last->next = &range_group->migrated_ranges;
+        }
         uvm_spin_unlock(&range_group->migrated_ranges_lock);
     }
 
@@ -492,7 +498,7 @@ static NV_STATUS uvm_range_groups_set_migration_policy(uvm_va_space_t *va_space,
     }
 
     for (i = 0; i < num_group_ids; ++i) {
-        range_groups[i] = radix_tree_lookup(&va_space->range_groups, range_group_ids[i]);
+        range_groups[i] = table_find(va_space->range_groups, pointer_from_u64(range_group_ids[i]));
         if (!range_groups[i]) {
             if (!allow_migration)
                 uvm_va_space_up_write(va_space);
@@ -788,7 +794,7 @@ void uvm_range_group_migratable_page_mask(uvm_va_block_t *va_block,
     }
 }
 
-NV_STATUS uvm_api_prevent_migration_range_groups(UVM_PREVENT_MIGRATION_RANGE_GROUPS_PARAMS *params, struct file *filp)
+NV_STATUS uvm_api_prevent_migration_range_groups(UVM_PREVENT_MIGRATION_RANGE_GROUPS_PARAMS *params, fdesc filp)
 {
     NV_STATUS status;
     uvm_va_space_t *va_space = uvm_va_space_get(filp);
@@ -800,75 +806,9 @@ NV_STATUS uvm_api_prevent_migration_range_groups(UVM_PREVENT_MIGRATION_RANGE_GRO
     return status;
 }
 
-NV_STATUS uvm_api_allow_migration_range_groups(UVM_ALLOW_MIGRATION_RANGE_GROUPS_PARAMS *params, struct file *filp)
+NV_STATUS uvm_api_allow_migration_range_groups(UVM_ALLOW_MIGRATION_RANGE_GROUPS_PARAMS *params, fdesc filp)
 {
     uvm_va_space_t *va_space = uvm_va_space_get(filp);
 
     return uvm_range_groups_set_migration_policy(va_space, params->rangeGroupIds, params->numGroupIds, true);
-}
-
-NV_STATUS uvm_test_range_group_range_info(UVM_TEST_RANGE_GROUP_RANGE_INFO_PARAMS *params, struct file *filp)
-{
-    uvm_range_group_range_t *rgr;
-    uvm_va_space_t *va_space = uvm_va_space_get(filp);
-
-    uvm_va_space_down_read(va_space);
-
-    rgr = uvm_range_group_range_iter_first(va_space, params->lookup_address, ULLONG_MAX);
-
-    params->range_group_present = rgr != NULL && rgr->node.start <= params->lookup_address;
-    if (params->range_group_present) {
-        params->range_group_range_start = rgr->node.start;
-        params->range_group_range_end = rgr->node.end;
-        params->range_group_id = rgr->range_group->id;
-    }
-    else {
-        uvm_range_group_range_t *prev;
-        uvm_range_group_range_t *next = rgr;
-
-        if (next) {
-            params->range_group_range_end = next->node.start - 1;
-            prev = range_group_range_prev(va_space, next);
-        }
-        else {
-            params->range_group_range_end = ULLONG_MAX;
-            prev = list_last_entry_or_null(&va_space->range_group_ranges.head, uvm_range_group_range_t, node.list);
-        }
-
-        if (prev)
-            params->range_group_range_start = prev->node.end + 1;
-        else
-            params->range_group_range_start = 0;
-
-        params->range_group_id = UVM_RANGE_GROUP_ID_NONE;
-    }
-
-    uvm_va_space_up_read(va_space);
-
-    return NV_OK;
-}
-
-NV_STATUS uvm_test_range_group_range_count(UVM_TEST_RANGE_GROUP_RANGE_COUNT_PARAMS *params, struct file *filp)
-{
-    uvm_range_group_range_t *rgr;
-    uvm_range_group_t *range_group;
-    uvm_va_space_t *va_space = uvm_va_space_get(filp);
-
-    params->count = 0;
-    uvm_va_space_down_read(va_space);
-
-    range_group = radix_tree_lookup(&va_space->range_groups, params->rangeGroupId);
-    if (range_group == NULL) {
-        uvm_va_space_up_read(va_space);
-        return NV_ERR_OBJECT_NOT_FOUND;
-    }
-
-    list_for_each_entry(rgr, &range_group->ranges, range_group_list_node) {
-        UVM_ASSERT(rgr->range_group == range_group);
-        params->count++;
-    }
-
-    uvm_va_space_up_read(va_space);
-
-    return NV_OK;
 }

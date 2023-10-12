@@ -22,7 +22,7 @@
 *******************************************************************************/
 
 #include "uvm_common.h"
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_perf_utils.h"
 #include "uvm_kvmalloc.h"
 

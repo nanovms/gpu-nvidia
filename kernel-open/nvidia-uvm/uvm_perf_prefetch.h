@@ -24,7 +24,7 @@
 #ifndef __UVM_PERF_PREFETCH_H__
 #define __UVM_PERF_PREFETCH_H__
 
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_processors.h"
 #include "uvm_va_block_types.h"
 

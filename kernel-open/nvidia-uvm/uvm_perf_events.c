@@ -30,16 +30,16 @@ typedef struct
 {
     uvm_perf_event_callback_t callback;
 
-    struct list_head callback_list_node;
+    struct list callback_list_node;
 } callback_desc_t;
 
 // Cache for callback descriptor list entries
-static struct kmem_cache *g_callback_desc_cache;
+static heap g_callback_desc_cache;
 
 // Check if the callback list already contains an entry for the given callback. Caller needs to hold (at least) read
 // va_space_events lock
 static callback_desc_t *event_list_find_callback(uvm_perf_va_space_events_t *va_space_events,
-                                                 struct list_head *callback_list, uvm_perf_event_callback_t callback)
+                                                 struct list *callback_list, uvm_perf_event_callback_t callback)
 {
     callback_desc_t *callback_desc;
 
@@ -58,7 +58,7 @@ NV_STATUS uvm_perf_register_event_callback_locked(uvm_perf_va_space_events_t *va
                                                   uvm_perf_event_callback_t callback)
 {
     callback_desc_t *callback_desc;
-    struct list_head *callback_list;
+    struct list *callback_list;
 
     UVM_ASSERT(event_id >= 0 && event_id < UVM_PERF_EVENT_COUNT);
     UVM_ASSERT(callback);
@@ -95,7 +95,7 @@ void uvm_perf_unregister_event_callback_locked(uvm_perf_va_space_events_t *va_sp
                                                uvm_perf_event_callback_t callback)
 {
     callback_desc_t *callback_desc;
-    struct list_head *callback_list;
+    struct list *callback_list;
 
     UVM_ASSERT(event_id >= 0 && event_id < UVM_PERF_EVENT_COUNT);
     UVM_ASSERT(callback);
@@ -125,7 +125,7 @@ void uvm_perf_event_notify(uvm_perf_va_space_events_t *va_space_events, uvm_perf
                            uvm_perf_event_data_t *event_data)
 {
     callback_desc_t *callback_desc;
-    struct list_head *callback_list;
+    struct list *callback_list;
 
     UVM_ASSERT(event_id >= 0 && event_id < UVM_PERF_EVENT_COUNT);
     UVM_ASSERT(event_data);
@@ -147,7 +147,7 @@ bool uvm_perf_is_event_callback_registered(uvm_perf_va_space_events_t *va_space_
                                            uvm_perf_event_callback_t callback)
 {
     callback_desc_t *callback_desc;
-    struct list_head *callback_list;
+    struct list *callback_list;
 
     uvm_assert_rwsem_locked(&va_space_events->lock);
 
@@ -184,7 +184,7 @@ void uvm_perf_destroy_va_space_events(uvm_perf_va_space_events_t *va_space_event
     // Destroy all event callback lists' entries
     for (event_id = 0; event_id < UVM_PERF_EVENT_COUNT; ++event_id) {
         callback_desc_t *callback_desc, *callback_desc_tmp;
-        struct list_head *callback_list;
+        struct list *callback_list;
 
         callback_list = &va_space_events->event_callbacks[event_id];
 

@@ -27,8 +27,6 @@
 #include "uvm_gpu.h"
 #include "uvm_forward_decl.h"
 
-#include <linux/iommu.h>
-
 // For ATS support on aarch64, arm_smmu_sva_bind() is needed for
 // iommu_sva_bind_device() calls. Unfortunately, arm_smmu_sva_bind() is not
 // conftest-able. We instead look for the presence of ioasid_get() or

@@ -27,7 +27,7 @@
 #include "uvm_channel.h"
 #include "uvm_hal.h"
 #include "uvm_kvmalloc.h"
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "nv_stdarg.h"
 
 // This parameter enables push description tracking in push info. It's enabled
@@ -150,7 +150,7 @@ static void push_set_description(uvm_push_t *push, const char *format, va_list a
     UVM_ASSERT(uvm_push_info_is_tracking_descriptions());
 
     push_info = uvm_push_info_from_push(push);
-    vsnprintf(push_info->description, sizeof(push_info->description), format, args);
+    os_vsnprintf(push_info->description, sizeof(push_info->description), format, args);
 }
 
 void uvm_push_set_description(uvm_push_t *push, const char *format, ...)

@@ -114,7 +114,7 @@ typedef struct
 
         // List of pinned pages. This list is only used if the pinning timeout
         // is not 0.
-        struct list_head                        list;
+        struct list                             list;
     } pinned_pages;
 } block_thrashing_info_t;
 
@@ -132,12 +132,15 @@ typedef struct
 
     // Entry in the per-VA Space list of pinned pages. See
     // va_space_thrashing_info_t::pinned_pages::list.
-    struct list_head             va_space_list_entry;
+    struct list                  va_space_list_entry;
 
     // Entry in the per-VA Block list of pinned pages. See
     // block_thrashing_info_t::pinned_pages::list.
-    struct list_head             va_block_list_entry;
+    struct list                  va_block_list_entry;
 } pinned_page_t;
+
+declare_closure_struct(0, 2, void, thrashing_unpin_pages,
+                       u64, expiry, u64, overruns);
 
 // Per-VA space data structures and policy configuration
 typedef struct
@@ -148,7 +151,8 @@ typedef struct
     struct
     {
         // Work descriptor that is executed asynchronously by a helper thread
-        struct delayed_work                    dwork;
+        struct timer                           dwork;
+        closure_struct(thrashing_unpin_pages, dwork_handler);
 
         // List of pinned pages. They are (mostly) ordered by unpin deadline.
         // New entries are inserted blindly at the tail since the expectation
@@ -160,7 +164,7 @@ typedef struct
         //
         // Entries are removed when they reach the deadline by the function
         // configured in dwork. This list is protected by lock.
-        struct list_head                        list;
+        struct list                             list;
 
         uvm_spinlock_t                          lock;
 
@@ -231,8 +235,8 @@ static processor_thrashing_stats_t g_cpu_thrashing_stats;
     } while (0)
 
 // Global caches for the per-VA block thrashing detection structures
-static struct kmem_cache *g_va_block_thrashing_info_cache __read_mostly;
-static struct kmem_cache *g_pinned_page_cache __read_mostly;
+static heap g_va_block_thrashing_info_cache __read_mostly;
+static heap g_pinned_page_cache __read_mostly;
 
 //
 // Tunables for thrashing detection/prevention (configurable via module parameters)
@@ -411,48 +415,14 @@ static uvm_perf_module_event_callback_desc_t g_callbacks_thrashing[] = {
     { UVM_PERF_EVENT_REVOCATION,    thrashing_event_cb         }
 };
 
-static int nv_procfs_read_thrashing_stats(struct seq_file *s, void *v)
-{
-    processor_thrashing_stats_t *processor_stats = (processor_thrashing_stats_t *)s->private;
-
-    UVM_ASSERT(processor_stats);
-
-    if (!uvm_down_read_trylock(&g_uvm_global.pm.lock))
-            return -EAGAIN;
-
-    UVM_SEQ_OR_DBG_PRINT(s, "thrashing     %llu\n", (NvU64)atomic64_read(&processor_stats->num_thrashing));
-    UVM_SEQ_OR_DBG_PRINT(s, "throttle      %llu\n", (NvU64)atomic64_read(&processor_stats->num_throttle));
-    UVM_SEQ_OR_DBG_PRINT(s, "pin_local     %llu\n", (NvU64)atomic64_read(&processor_stats->num_pin_local));
-    UVM_SEQ_OR_DBG_PRINT(s, "pin_remote    %llu\n", (NvU64)atomic64_read(&processor_stats->num_pin_remote));
-
-    uvm_up_read(&g_uvm_global.pm.lock);
-
-    return 0;
-}
-
-static int nv_procfs_read_thrashing_stats_entry(struct seq_file *s, void *v)
-{
-    UVM_ENTRY_RET(nv_procfs_read_thrashing_stats(s, v));
-}
-
-UVM_DEFINE_SINGLE_PROCFS_FILE(thrashing_stats_entry);
-
 #define THRASHING_STATS_FILE_NAME "thrashing_stats"
 
 // Initialization/deinitialization of CPU thrashing stats
 //
 static NV_STATUS cpu_thrashing_stats_init(void)
 {
-    struct proc_dir_entry *cpu_base_dir_entry = uvm_procfs_get_cpu_base_dir();
-
     if (uvm_procfs_is_debug_enabled()) {
         UVM_ASSERT(!g_cpu_thrashing_stats.procfs_file);
-        g_cpu_thrashing_stats.procfs_file = NV_CREATE_PROC_FILE(THRASHING_STATS_FILE_NAME,
-                                                                cpu_base_dir_entry,
-                                                                thrashing_stats_entry,
-                                                                &g_cpu_thrashing_stats);
-        if (!g_cpu_thrashing_stats.procfs_file)
-            return NV_ERR_OPERATING_SYSTEM;
     }
 
     return NV_OK;
@@ -462,7 +432,6 @@ static void cpu_thrashing_stats_exit(void)
 {
     if (g_cpu_thrashing_stats.procfs_file) {
         UVM_ASSERT(uvm_procfs_is_debug_enabled());
-        proc_remove(g_cpu_thrashing_stats.procfs_file);
         g_cpu_thrashing_stats.procfs_file = NULL;
     }
 }
@@ -502,15 +471,6 @@ static NV_STATUS gpu_thrashing_stats_create(uvm_gpu_t *gpu)
     if (!gpu_thrashing)
         return NV_ERR_NO_MEMORY;
 
-    gpu_thrashing->procfs_file = NV_CREATE_PROC_FILE(THRASHING_STATS_FILE_NAME,
-                                                     gpu->procfs.dir,
-                                                     thrashing_stats_entry,
-                                                     gpu_thrashing);
-    if (!gpu_thrashing->procfs_file) {
-        uvm_kvfree(gpu_thrashing);
-        return NV_ERR_OPERATING_SYSTEM;
-    }
-
     uvm_perf_module_type_set_data(gpu->perf_modules_data, gpu_thrashing, UVM_PERF_MODULE_TYPE_THRASHING);
 
     return NV_OK;
@@ -524,9 +484,6 @@ static void gpu_thrashing_stats_destroy(uvm_gpu_t *gpu)
 
     if (gpu_thrashing) {
         uvm_perf_module_type_unset_data(gpu->perf_modules_data, UVM_PERF_MODULE_TYPE_THRASHING);
-
-        if (gpu_thrashing->procfs_file)
-            proc_remove(gpu_thrashing->procfs_file);
 
         uvm_kvfree(gpu_thrashing);
     }
@@ -935,10 +892,9 @@ static NV_STATUS thrashing_pin_page(va_space_thrashing_info_t *va_space_thrashin
             // itself if there are remaining pages in the list.
             if (list_is_singular(&va_space_thrashing->pinned_pages.list) &&
                 !va_space_thrashing->pinned_pages.in_va_space_teardown) {
-                int scheduled;
-                scheduled = schedule_delayed_work(&va_space_thrashing->pinned_pages.dwork,
-                                                  usecs_to_jiffies(va_space_thrashing->params.pin_ns / 1000));
-                UVM_ASSERT(scheduled != 0);
+                register_timer(kernel_timers, &va_space_thrashing->pinned_pages.dwork,
+                    CLOCK_ID_MONOTONIC, nanoseconds(va_space_thrashing->params.pin_ns), false, 0,
+                    (timer_handler)&va_space_thrashing->pinned_pages.dwork_handler);
             }
 
             uvm_spin_unlock(&va_space_thrashing->pinned_pages.lock);
@@ -995,7 +951,7 @@ static void thrashing_unpin_page(va_space_thrashing_info_t *va_space_thrashing,
             list_del_init(&pinned_page->va_space_list_entry);
 
             if (list_empty(&va_space_thrashing->pinned_pages.list))
-                cancel_delayed_work(&va_space_thrashing->pinned_pages.dwork);
+                remove_timer(kernel_timers, &va_space_thrashing->pinned_pages.dwork, 0);
         }
 
         uvm_spin_unlock(&va_space_thrashing->pinned_pages.lock);
@@ -1798,10 +1754,14 @@ const uvm_page_mask_t *uvm_perf_thrashing_get_thrashing_pages(uvm_va_block_t *va
 }
 
 #define TIMER_GRANULARITY_NS 20000ULL
-static void thrashing_unpin_pages(struct work_struct *work)
+define_closure_function(0, 2, void, thrashing_unpin_pages,
+                        u64, expiry, u64, overruns)
 {
-    struct delayed_work *dwork = to_delayed_work(work);
-    va_space_thrashing_info_t *va_space_thrashing = container_of(dwork, va_space_thrashing_info_t, pinned_pages.dwork);
+    if (overruns == timer_disabled)
+        return;
+
+    va_space_thrashing_info_t *va_space_thrashing =
+            container_of(closure_self(), va_space_thrashing_info_t, pinned_pages.dwork_handler);
     uvm_va_space_t *va_space = va_space_thrashing->va_space;
     uvm_va_block_context_t *va_block_context = &va_space_thrashing->pinned_pages.va_block_context;
 
@@ -1840,7 +1800,9 @@ static void thrashing_unpin_pages(struct work_struct *work)
             else {
                 NvU64 elapsed_us = (pinned_page->deadline - now) / 1000;
 
-                schedule_delayed_work(&va_space_thrashing->pinned_pages.dwork, usecs_to_jiffies(elapsed_us));
+                register_timer(kernel_timers, &va_space_thrashing->pinned_pages.dwork,
+                    CLOCK_ID_MONOTONIC, microseconds(elapsed_us), false, 0,
+                    (timer_handler)closure_self());
                 uvm_spin_unlock(&va_space_thrashing->pinned_pages.lock);
                 break;
             }
@@ -1883,11 +1845,6 @@ exit_no_list_lock:
     uvm_va_space_up_read(va_space);
 }
 
-static void thrashing_unpin_pages_entry(struct work_struct *work)
-{
-    UVM_ENTRY_VOID(thrashing_unpin_pages(work));
-}
-
 NV_STATUS uvm_perf_thrashing_load(uvm_va_space_t *va_space)
 {
     va_space_thrashing_info_t *va_space_thrashing;
@@ -1903,7 +1860,8 @@ NV_STATUS uvm_perf_thrashing_load(uvm_va_space_t *va_space)
 
     uvm_spin_lock_init(&va_space_thrashing->pinned_pages.lock, UVM_LOCK_ORDER_LEAF);
     INIT_LIST_HEAD(&va_space_thrashing->pinned_pages.list);
-    INIT_DELAYED_WORK(&va_space_thrashing->pinned_pages.dwork, thrashing_unpin_pages_entry);
+    init_timer(&va_space_thrashing->pinned_pages.dwork);
+    init_closure(&va_space_thrashing->pinned_pages.dwork_handler, thrashing_unpin_pages);
 
     return NV_OK;
 }
@@ -2048,112 +2006,4 @@ NV_STATUS uvm_perf_thrashing_add_gpu(uvm_gpu_t *gpu)
 void uvm_perf_thrashing_remove_gpu(uvm_gpu_t *gpu)
 {
     gpu_thrashing_stats_destroy(gpu);
-}
-
-NV_STATUS uvm_test_get_page_thrashing_policy(UVM_TEST_GET_PAGE_THRASHING_POLICY_PARAMS *params, struct file *filp)
-{
-    uvm_va_space_t *va_space = uvm_va_space_get(filp);
-    va_space_thrashing_info_t *va_space_thrashing;
-
-    uvm_va_space_down_read(va_space);
-
-    va_space_thrashing = va_space_thrashing_info_get(va_space);
-
-    if (va_space_thrashing->params.enable) {
-        params->policy = UVM_TEST_PAGE_THRASHING_POLICY_ENABLE;
-        params->nap_ns = va_space_thrashing->params.nap_ns;
-        params->pin_ns = va_space_thrashing->params.pin_ns;
-        params->map_remote_on_native_atomics_fault = uvm_perf_map_remote_on_native_atomics_fault != 0;
-    }
-    else {
-        params->policy = UVM_TEST_PAGE_THRASHING_POLICY_DISABLE;
-    }
-
-    uvm_va_space_up_read(va_space);
-
-    return NV_OK;
-}
-
-NV_STATUS uvm_test_set_page_thrashing_policy(UVM_TEST_SET_PAGE_THRASHING_POLICY_PARAMS *params, struct file *filp)
-{
-    NV_STATUS status = NV_OK;
-    uvm_va_space_t *va_space = uvm_va_space_get(filp);
-    va_space_thrashing_info_t *va_space_thrashing;
-
-    if (params->policy >= UVM_TEST_PAGE_THRASHING_POLICY_MAX)
-        return NV_ERR_INVALID_ARGUMENT;
-
-    if (!g_uvm_perf_thrashing_enable)
-        return NV_ERR_INVALID_STATE;
-
-    uvm_va_space_down_write(va_space);
-
-    va_space_thrashing = va_space_thrashing_info_get(va_space);
-    va_space_thrashing->params.test_overrides = true;
-
-    if (params->policy == UVM_TEST_PAGE_THRASHING_POLICY_ENABLE) {
-        if (va_space_thrashing->params.enable)
-            goto done_unlock_va_space;
-
-        va_space_thrashing->params.pin_ns = params->pin_ns;
-        va_space_thrashing->params.enable = true;
-    }
-    else {
-        if (!va_space_thrashing->params.enable)
-            goto done_unlock_va_space;
-
-        va_space_thrashing->params.enable = false;
-    }
-
-    // When disabling thrashing detection, destroy the thrashing tracking
-    // information for all VA blocks and unpin pages
-    if (!va_space_thrashing->params.enable) {
-        uvm_va_range_t *va_range;
-
-        uvm_for_each_va_range(va_range, va_space) {
-            uvm_va_block_t *va_block;
-
-            if (va_range->type != UVM_VA_RANGE_TYPE_MANAGED)
-                continue;
-
-            for_each_va_block_in_va_range(va_range, va_block) {
-                uvm_va_block_region_t va_block_region = uvm_va_block_region_from_block(va_block);
-                uvm_va_block_context_t *block_context = uvm_va_space_block_context(va_space, NULL);
-
-                uvm_mutex_lock(&va_block->lock);
-
-                // Unmap may split PTEs and require a retry. Needs to be called
-                // before the pinned pages information is destroyed.
-                status = UVM_VA_BLOCK_RETRY_LOCKED(va_block, NULL,
-                             uvm_perf_thrashing_unmap_remote_pinned_pages_all(va_block,
-                                                                              block_context,
-                                                                              va_block_region));
-
-                uvm_perf_thrashing_info_destroy(va_block);
-
-                uvm_mutex_unlock(&va_block->lock);
-
-                // Re-enable thrashing on failure to avoid getting asserts
-                // about having state while thrashing is disabled
-                if (status != NV_OK) {
-                    va_space_thrashing->params.enable = true;
-                    goto done_unlock_va_space;
-                }
-            }
-        }
-
-        status = uvm_hmm_clear_thrashing_policy(va_space);
-
-        // Re-enable thrashing on failure to avoid getting asserts
-        // about having state while thrashing is disabled
-        if (status != NV_OK) {
-            va_space_thrashing->params.enable = true;
-            goto done_unlock_va_space;
-        }
-    }
-
-done_unlock_va_space:
-    uvm_va_space_up_write(va_space);
-
-    return status;
 }

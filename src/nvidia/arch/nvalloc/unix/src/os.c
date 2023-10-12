@@ -282,6 +282,25 @@ void osPciWriteDword(
     os_pci_write_dword(pHandle, Offset, Value);
 }
 
+void* osPciAllocHandle(
+    NvU32  Domain,
+    NvU8   Bus,
+    NvU8   Slot,
+    NvU8   Function,
+    NvU16 *pVendor,
+    NvU16 *pDevice
+)
+{
+    return os_pci_alloc_handle(Domain, Bus, Slot, Function, pVendor, pDevice);
+}
+
+void osPciDeallocHandle(
+    void  *pHandle
+)
+{
+    os_pci_dealloc_handle(pHandle);
+}
+
 void* osMapKernelSpace(
     RmPhysAddr Start,
     NvU64      Size,

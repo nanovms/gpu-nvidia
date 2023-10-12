@@ -28,7 +28,7 @@
 #include "uvm_gpu.h"
 #include "uvm_global.h"
 #include "uvm_common.h"
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 
 static bool tracker_is_using_static_entries(uvm_tracker_t *tracker)
 {

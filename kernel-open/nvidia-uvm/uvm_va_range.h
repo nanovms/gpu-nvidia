@@ -24,7 +24,7 @@
 #ifndef __UVM_VA_RANGE_H__
 #define __UVM_VA_RANGE_H__
 
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "nv-kref.h"
 #include "uvm_common.h"
 #include "uvm_perf_module.h"
@@ -118,7 +118,7 @@ typedef struct
 {
     // Needed for creating CPU mappings on the va_range. Do not access this
     // directly, instead use uvm_va_range_vma and friends.
-    struct vm_area_struct *vma;
+    vmap vma;
 
     uvm_rw_semaphore_t lock;
 } uvm_vma_wrapper_t;
@@ -287,7 +287,7 @@ typedef struct
     NvU64 ref_count;
 
     // Storage in the corresponding uvm_gpu_va_space's channel_va_ranges list
-    struct list_head list_node;
+    struct list list_node;
 } uvm_va_range_channel_t;
 
 // va_range state when va_range.type == UVM_VA_RANGE_TYPE_SKED_REFLECTED. This
@@ -453,12 +453,12 @@ NV_STATUS uvm_va_range_create_semaphore_pool(uvm_va_space_t *va_space,
 // deferred_free_list may be NULL if the VA range type is known to not require
 // deferred free. Otherwise this function adds entries to the list for later
 // processing by uvm_deferred_free_object_list.
-void uvm_va_range_destroy(uvm_va_range_t *va_range, struct list_head *deferred_free_list);
+void uvm_va_range_destroy(uvm_va_range_t *va_range, struct list *deferred_free_list);
 
 void uvm_va_range_zombify(uvm_va_range_t *va_range);
 
-NV_STATUS uvm_api_clean_up_zombie_resources(UVM_CLEAN_UP_ZOMBIE_RESOURCES_PARAMS *params, struct file *filp);
-NV_STATUS uvm_api_validate_va_range(UVM_VALIDATE_VA_RANGE_PARAMS *params, struct file *filp);
+NV_STATUS uvm_api_clean_up_zombie_resources(UVM_CLEAN_UP_ZOMBIE_RESOURCES_PARAMS *params, fdesc filp);
+NV_STATUS uvm_api_validate_va_range(UVM_VALIDATE_VA_RANGE_PARAMS *params, fdesc filp);
 
 // Inform the VA range that a GPU VA space is now available for them to map, if
 // the VA range is supposed to proactively map GPUs (UvmAllocSemaphorePool,
@@ -483,7 +483,7 @@ NV_STATUS uvm_va_range_add_gpu_va_space(uvm_va_range_t *va_range,
 void uvm_va_range_remove_gpu_va_space(uvm_va_range_t *va_range,
                                       uvm_gpu_va_space_t *gpu_va_space,
                                       struct mm_struct *mm,
-                                      struct list_head *deferred_free_list);
+                                      struct list *deferred_free_list);
 
 // Inform the VA range that peer mappings can now be established between the
 // GPUs, if the VA range is supposed to proactively create them (UvmSetAccessedBy).
@@ -494,7 +494,7 @@ NV_STATUS uvm_va_range_enable_peer(uvm_va_range_t *va_range, uvm_gpu_t *gpu0, uv
 void uvm_va_range_disable_peer(uvm_va_range_t *va_range,
                                uvm_gpu_t *gpu0,
                                uvm_gpu_t *gpu1,
-                               struct list_head *deferred_free_list);
+                               struct list *deferred_free_list);
 
 // Notify the VA range of a newly registered GPU.
 //
@@ -517,7 +517,7 @@ NV_STATUS uvm_va_range_register_gpu(uvm_va_range_t *va_range, uvm_gpu_t *gpu);
 void uvm_va_range_unregister_gpu(uvm_va_range_t *va_range,
                                  uvm_gpu_t *gpu,
                                  struct mm_struct *mm,
-                                 struct list_head *deferred_free_list);
+                                 struct list *deferred_free_list);
 
 // Splits existing_va_range into two pieces, with new_va_range always after
 // existing. existing is updated to have new_end. new_end+1 must be page-
@@ -640,9 +640,9 @@ static bool uvm_va_space_range_empty(uvm_va_space_t *va_space, NvU64 start, NvU6
 //
 // Otherwise, use uvm_va_range_vma_current or uvm_va_range_vma_check and be
 // prepared to handle a NULL return value.
-static struct vm_area_struct *uvm_va_range_vma(uvm_va_range_t *va_range)
+static vmap uvm_va_range_vma(uvm_va_range_t *va_range)
 {
-    struct vm_area_struct *vma;
+    vmap vma;
     UVM_ASSERT_MSG(va_range->type == UVM_VA_RANGE_TYPE_MANAGED, "type: %d", va_range->type);
     UVM_ASSERT(va_range->managed.vma_wrapper);
 
@@ -653,29 +653,18 @@ static struct vm_area_struct *uvm_va_range_vma(uvm_va_range_t *va_range)
     // or vm_ops->close, which both take va_space->lock.
     vma = va_range->managed.vma_wrapper->vma;
     UVM_ASSERT(vma);
-    UVM_ASSERT_MSG(vma->vm_private_data == va_range->managed.vma_wrapper,
-                   "vma: 0x%llx [0x%lx, 0x%lx] has vm_private_data 0x%llx\n",
-                   (NvU64)vma,
-                   vma->vm_start,
-                   vma->vm_end - 1,
-                   (NvU64)vma->vm_private_data);
-    UVM_ASSERT_MSG(va_range->va_space == uvm_va_space_get(vma->vm_file),
-                   "va_range va_space: 0x%llx vm_file: 0x%llx vm_file va_space: 0x%llx",
-                   (NvU64)va_range->va_space,
-                   (NvU64)vma->vm_file,
-                   (NvU64)uvm_va_space_get(vma->vm_file));
-    UVM_ASSERT_MSG(va_range->node.start >= vma->vm_start,
-                   "Range mismatch: va_range: [0x%llx, 0x%llx] vma: [0x%lx, 0x%lx]\n",
+    UVM_ASSERT_MSG(va_range->node.start >= vma->node.r.start,
+                   "Range mismatch: va_range: [0x%lx, 0x%lx] vma: [0x%lx, 0x%lx]\n",
                    va_range->node.start,
                    va_range->node.end,
-                   vma->vm_start,
-                   vma->vm_end - 1);
-    UVM_ASSERT_MSG(va_range->node.end <= vma->vm_end - 1,
-                   "Range mismatch: va_range: [0x%llx, 0x%llx] vma: [0x%lx, 0x%lx]\n",
+                   vma->node.r.start,
+                   vma->node.r.end - 1);
+    UVM_ASSERT_MSG(va_range->node.end <= vma->node.r.end - 1,
+                   "Range mismatch: va_range: [0x%lx, 0x%lx] vma: [0x%lx, 0x%lx]\n",
                    va_range->node.start,
                    va_range->node.end,
-                   vma->vm_start,
-                   vma->vm_end - 1);
+                   vma->node.r.start,
+                   vma->node.r.end - 1);
 
     return vma;
 }
@@ -683,9 +672,9 @@ static struct vm_area_struct *uvm_va_range_vma(uvm_va_range_t *va_range)
 // Check that the VA range's vma is safe to use under mm. If not, NULL is
 // returned. If the vma is returned, there must be a reference on mm and
 // mm->mmap_lock must be held.
-static struct vm_area_struct *uvm_va_range_vma_check(uvm_va_range_t *va_range, struct mm_struct *mm)
+static vmap uvm_va_range_vma_check(uvm_va_range_t *va_range)
 {
-    struct vm_area_struct *vma;
+    vmap vma;
 
     UVM_ASSERT_MSG(va_range->type == UVM_VA_RANGE_TYPE_MANAGED, "type: %d\n", va_range->type);
 
@@ -695,42 +684,13 @@ static struct vm_area_struct *uvm_va_range_vma_check(uvm_va_range_t *va_range, s
 
     vma = uvm_va_range_vma(va_range);
 
-    // Examples of mm on various paths:
-    //  - CPU fault         vma->vm_mm
-    //  - GPU fault         current->mm or va_space->va_space_mm.mm
-    //  - IOCTL             current->mm or va_space->va_space_mm.mm
-    //  - Process teardown  NULL
-    //
-    // Since the "safe" mm varies based on the path, we may not have a reference
-    // on the vma's owning mm_struct. We won't know that until we look at the
-    // vma. By then it's too late to take mmap_lock since mmap_lock is above the
-    // va_space lock in our lock ordering, and we must be holding the va_space
-    // lock to query the va_range. Hence the need to detect the cases in which
-    // it's safe to operate on the vma.
-    //
-    // When we can't detect for certain that mm is safe to use, we shouldn't
-    // operate on the vma at all. The vma can't be outright freed until we drop
-    // the va_space lock so the pointer itself will remain valid, but its fields
-    // (like vm_start and vm_end) could be modified behind our back. We also
-    // aren't allowed to call vm_insert_page unless we hold the vma's mmap_lock.
-    //
-    // Note that if uvm_va_space_mm_enabled() is true, then vma->vm_mm must be
-    // va_space->va_space_mm.mm because we enforce that at mmap.
-    //
-    // An interesting case is when vma->vm_mm != current->mm. This can happen
-    // due to fork, ptrace, process teardown, etc. It will also be the case in
-    // the GPU fault handler.
-    if (mm != vma->vm_mm)
-        return NULL;
-
-    uvm_assert_mmap_lock_locked(vma->vm_mm);
     return vma;
 }
 
 // Helper for use when the only mm which is known is current->mm
-static struct vm_area_struct *uvm_va_range_vma_current(uvm_va_range_t *va_range)
+static vmap uvm_va_range_vma_current(uvm_va_range_t *va_range)
 {
-    return uvm_va_range_vma_check(va_range, current->mm);
+    return uvm_va_range_vma_check(va_range);
 }
 
 // Returns the maximum number of VA blocks which could be contained with the
@@ -855,7 +815,7 @@ NV_STATUS uvm_va_range_set_read_duplication(uvm_va_range_t *va_range, struct mm_
 NV_STATUS uvm_va_range_unset_read_duplication(uvm_va_range_t *va_range, struct mm_struct *mm);
 
 // Create and destroy vma wrappers
-uvm_vma_wrapper_t *uvm_vma_wrapper_alloc(struct vm_area_struct *vma);
+uvm_vma_wrapper_t *uvm_vma_wrapper_alloc(vmap vma);
 void uvm_vma_wrapper_destroy(uvm_vma_wrapper_t *vma_wrapper);
 
 static uvm_va_policy_t *uvm_va_range_get_policy(uvm_va_range_t *va_range)

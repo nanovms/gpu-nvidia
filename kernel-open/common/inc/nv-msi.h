@@ -24,13 +24,9 @@
 #ifndef _NV_MSI_H_
 #define _NV_MSI_H_
 
-#include "nv-linux.h"
+#include "nv-nanos.h"
 
-#if (defined(CONFIG_X86_LOCAL_APIC) || defined(NVCPU_AARCH64) || \
-     defined(NVCPU_PPC64LE)) && \
-    (defined(CONFIG_PCI_MSI) || defined(CONFIG_PCI_USE_VECTOR))
 #define NV_LINUX_PCIE_MSI_SUPPORTED
-#endif
 
 #if !defined(NV_LINUX_PCIE_MSI_SUPPORTED) || !defined(CONFIG_PCI_MSI)
 #define NV_PCI_DISABLE_MSI(pci_dev)
@@ -38,26 +34,23 @@
 #define NV_PCI_DISABLE_MSI(pci_dev)     pci_disable_msi(pci_dev)
 #endif
 
-irqreturn_t     nvidia_isr              (int, void *);
-irqreturn_t     nvidia_isr_msix         (int, void *);
-irqreturn_t     nvidia_isr_kthread_bh   (int, void *);
-irqreturn_t     nvidia_isr_msix_kthread_bh(int, void *);
+void nvidia_isr_common_bh(void *data);
 
 #if defined(NV_LINUX_PCIE_MSI_SUPPORTED)
 void    NV_API_CALL nv_init_msi         (nv_state_t *);
 void    NV_API_CALL nv_init_msix        (nv_state_t *);
-NvS32   NV_API_CALL nv_request_msix_irq (nv_linux_state_t *);
+NvS32   NV_API_CALL nv_request_msix_irq (nv_nanos_state_t *);
 
 #define NV_PCI_MSIX_FLAGS         2
 #define NV_PCI_MSIX_FLAGS_QSIZE   0x7FF
 
-static inline void nv_free_msix_irq(nv_linux_state_t *nvl)
+static inline void nv_free_msix_irq(nv_nanos_state_t *nvl)
 {
     int i;
 
     for (i = 0; i < nvl->num_intr; i++)
     {
-        free_irq(nvl->msix_entries[i].vector, (void *)nvl);
+        pci_teardown_msix(nvl->pci_dev, i);
     }
 }
 
@@ -67,7 +60,7 @@ static inline int nv_get_max_irq(struct pci_dev *pci_dev)
     int cap_ptr;
     NvU16 ctrl;
 
-    cap_ptr = pci_find_capability(pci_dev, PCI_CAP_ID_MSIX);
+    cap_ptr = nv_find_pci_capability(pci_dev, PCIY_MSIX);
     /*
      * The 'PCI_MSIX_FLAGS' was added in 2.6.21-rc3 by:
      * 2007-03-05 f5f2b13129a6541debf8851bae843cbbf48298b7
@@ -76,14 +69,14 @@ static inline int nv_get_max_irq(struct pci_dev *pci_dev)
     pci_read_config_word(pci_dev, cap_ptr + PCI_MSIX_FLAGS, &ctrl);
     nvec = (ctrl & PCI_MSIX_FLAGS_QSIZE) + 1;
 #else
-    pci_read_config_word(pci_dev, cap_ptr + NV_PCI_MSIX_FLAGS, &ctrl);
+    ctrl = pci_cfgread(pci_dev, cap_ptr + NV_PCI_MSIX_FLAGS, 2);
     nvec = (ctrl & NV_PCI_MSIX_FLAGS_QSIZE) + 1;
 #endif
 
     return nvec;
 }
 
-static inline int nv_pci_enable_msix(nv_linux_state_t *nvl, int nvec)
+static inline int nv_pci_enable_msix(nv_nanos_state_t *nvl, int nvec)
 {
     int rc = 0;
 
@@ -101,7 +94,7 @@ static inline int nv_pci_enable_msix(nv_linux_state_t *nvl, int nvec)
     }
     WARN_ON(nvec != rc);
 #else
-    rc = pci_enable_msix(nvl->pci_dev, nvl->msix_entries, nvec);
+    rc = (pci_enable_msix(nvl->pci_dev) != nvec);
     if (rc != 0)
     {
         return NV_ERR_OPERATING_SYSTEM;

@@ -24,7 +24,7 @@
 #ifndef __UVM_PROCESSORS_H__
 #define __UVM_PROCESSORS_H__
 
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_common.h"
 
 #define UVM_MAX_UNIQUE_GPU_PAIRS SUM_FROM_0_TO_N(UVM_MAX_GPUS - 1)

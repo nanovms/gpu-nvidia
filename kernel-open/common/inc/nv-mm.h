@@ -42,8 +42,6 @@ typedef int vm_fault_t;
  *
  */
 
-#include <linux/mm.h>
-#include <linux/sched.h>
 #if defined(NV_PIN_USER_PAGES_PRESENT)
     #if defined(NV_PIN_USER_PAGES_HAS_ARGS_VMAS)
         #define NV_PIN_USER_PAGES pin_user_pages
@@ -91,19 +89,17 @@ typedef int vm_fault_t;
     static inline long NV_GET_USER_PAGES(unsigned long start,
                                          unsigned long nr_pages,
                                          unsigned int flags,
-                                         struct page **pages,
-                                         struct vm_area_struct **vmas)
+                                         NvU64 *pages,
+                                         vmap *vmas)
     {
-        int write = flags & FOLL_WRITE;
-        int force = flags & FOLL_FORCE;
+        unsigned long i;
 
-    #if defined(NV_GET_USER_PAGES_HAS_ARGS_WRITE_FORCE_VMAS)
-        return get_user_pages(start, nr_pages, write, force, pages, vmas);
-    #else
-        // NV_GET_USER_PAGES_HAS_ARGS_TSK_WRITE_FORCE_VMAS
-        return get_user_pages(current, current->mm, start, nr_pages, write,
-                              force, pages, vmas);
-    #endif // NV_GET_USER_PAGES_HAS_ARGS_WRITE_FORCE_VMAS
+        for (i = 0; i < nr_pages; i++) {
+            volatile u64 *ptr = pointer_from_u64(start + i * PAGESIZE);
+            (void)(*ptr);   /* fault-in page */
+            pages[i] = physical_from_virtual((void *)ptr);
+        }
+        return nr_pages;
     }
 #endif // NV_GET_USER_PAGES_HAS_ARGS_FLAGS
 
@@ -215,99 +211,8 @@ typedef int vm_fault_t;
 
     #else
         #define NV_GET_USER_PAGES_REMOTE(mm, start, nr_pages, flags, pages, vmas, locked) \
-            get_user_pages(NULL, mm, start, nr_pages, flags, pages, vmas)
+            NV_GET_USER_PAGES(start, nr_pages, flags, pages, vmas)
     #endif // NV_GET_USER_PAGES_HAS_ARGS_TSK_WRITE_FORCE_VMAS
 #endif // NV_GET_USER_PAGES_REMOTE_PRESENT
-
-/*
- * The .virtual_address field was effectively renamed to .address, by these
- * two commits:
- *
- *  struct vm_fault: .address was added by:
- *   2016-12-14  82b0f8c39a3869b6fd2a10e180a862248736ec6f
- *
- *  struct vm_fault: .virtual_address was removed by:
- *   2016-12-14  1a29d85eb0f19b7d8271923d8917d7b4f5540b3e
- */
-static inline unsigned long nv_page_fault_va(struct vm_fault *vmf)
-{
-#if defined(NV_VM_FAULT_HAS_ADDRESS)
-    return vmf->address;
-#else
-    return (unsigned long)(vmf->virtual_address);
-#endif
-}
-
-static inline void nv_mmap_read_lock(struct mm_struct *mm)
-{
-#if defined(NV_MM_HAS_MMAP_LOCK)
-    mmap_read_lock(mm);
-#else
-    down_read(&mm->mmap_sem);
-#endif
-}
-
-static inline void nv_mmap_read_unlock(struct mm_struct *mm)
-{
-#if defined(NV_MM_HAS_MMAP_LOCK)
-    mmap_read_unlock(mm);
-#else
-    up_read(&mm->mmap_sem);
-#endif
-}
-
-static inline void nv_mmap_write_lock(struct mm_struct *mm)
-{
-#if defined(NV_MM_HAS_MMAP_LOCK)
-    mmap_write_lock(mm);
-#else
-    down_write(&mm->mmap_sem);
-#endif
-}
-
-static inline void nv_mmap_write_unlock(struct mm_struct *mm)
-{
-#if defined(NV_MM_HAS_MMAP_LOCK)
-    mmap_write_unlock(mm);
-#else
-    up_write(&mm->mmap_sem);
-#endif
-}
-
-static inline int nv_mm_rwsem_is_locked(struct mm_struct *mm)
-{
-#if defined(NV_MM_HAS_MMAP_LOCK)
-    return rwsem_is_locked(&mm->mmap_lock);
-#else
-    return rwsem_is_locked(&mm->mmap_sem);
-#endif
-}
-
-static inline struct rw_semaphore *nv_mmap_get_lock(struct mm_struct *mm)
-{
-#if defined(NV_MM_HAS_MMAP_LOCK)
-    return &mm->mmap_lock;
-#else
-    return &mm->mmap_sem;
-#endif
-}
-
-static inline void nv_vm_flags_set(struct vm_area_struct *vma, vm_flags_t flags)
-{
-#if defined(NV_VM_AREA_STRUCT_HAS_CONST_VM_FLAGS)
-    vm_flags_set(vma, flags);
-#else
-    vma->vm_flags |= flags;
-#endif
-}
-
-static inline void nv_vm_flags_clear(struct vm_area_struct *vma, vm_flags_t flags)
-{
-#if defined(NV_VM_AREA_STRUCT_HAS_CONST_VM_FLAGS)
-    vm_flags_clear(vma, flags);
-#else
-    vma->vm_flags &= ~flags;
-#endif
-}
 
 #endif // __NV_MM_H__

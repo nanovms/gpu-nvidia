@@ -43,7 +43,7 @@ typedef enum
 // NV_ERR_NO_MEMORY. See the comment below for details on the touch argument.
 //
 // Locking: vma->vm_mm->mmap_lock must be held in read or write mode
-NV_STATUS uvm_populate_pageable_vma(struct vm_area_struct *vma,
+NV_STATUS uvm_populate_pageable_vma(vmap vma,
                                     unsigned long start,
                                     unsigned long length,
                                     int min_prot,

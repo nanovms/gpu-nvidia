@@ -21,15 +21,12 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-#include "nv-linux.h"
+#include "nv-nanos.h"
 #include "nv-caps.h"
 #include "nv-procfs.h"
 #include "nv-hash.h"
 
 extern int NVreg_ModifyDeviceFiles;
-
-/* sys_close() or __close_fd() */
-#include <linux/syscalls.h>
 
 #define NV_CAP_DRV_MINOR_COUNT 8192
 
@@ -46,7 +43,7 @@ typedef struct nv_cap_table_entry
     /* name must be the first element */
     const char *name;
     int minor;
-    struct hlist_node hlist;
+    struct list hlist;
 } nv_cap_table_entry_t;
 
 #define NV_CAP_NUM_ENTRIES(_table) (sizeof(_table) / sizeof(_table[0]))
@@ -157,182 +154,29 @@ struct nv_cap
 
 #define NV_CAP_PROCFS_WRITE_BUF_SIZE 128
 
-typedef struct nv_cap_file_private
-{
-    int minor;
-    int permissions;
-    int modify;
-    char buffer[NV_CAP_PROCFS_WRITE_BUF_SIZE];
-    off_t offset;
-} nv_cap_file_private_t;
-
 struct
 {
     NvBool initialized;
-    struct cdev cdev;
     dev_t devno;
 } g_nv_cap_drv;
 
 #define NV_CAP_PROCFS_DIR "driver/nvidia-caps"
 #define NV_CAP_NAME_BUF_SIZE 128
 
-static struct proc_dir_entry *nv_cap_procfs_dir;
-
-static int nv_procfs_read_nvlink_minors(struct seq_file *s, void *v)
-{
-    int i, count;
-    char name[NV_CAP_NAME_BUF_SIZE];
-
-    count = NV_CAP_NUM_ENTRIES(g_nv_cap_nvlink_table);
-    for (i = 0; i < count; i++)
-    {
-        if (sscanf(g_nv_cap_nvlink_table[i].name,
-                   "/driver/nvidia-nvlink/capabilities/%s", name) == 1)
-        {
-            name[sizeof(name) - 1] = '\0';
-            seq_printf(s, "%s %d\n", name, g_nv_cap_nvlink_table[i].minor);
-        }
-    }
-
-    return 0;
-}
-
-static int nv_procfs_read_sys_minors(struct seq_file *s, void *v)
-{
-    int i, count;
-    char name[NV_CAP_NAME_BUF_SIZE];
-
-    count = NV_CAP_NUM_ENTRIES(g_nv_cap_sys_table);
-    for (i = 0; i < count; i++)
-    {
-        if (sscanf(g_nv_cap_sys_table[i].name,
-                   "/driver/nvidia/capabilities/%s", name) == 1)
-        {
-            name[sizeof(name) - 1] = '\0';
-            seq_printf(s, "%s %d\n", name, g_nv_cap_sys_table[i].minor);
-        }
-    }
-
-    return 0;
-}
-
-static int nv_procfs_read_mig_minors(struct seq_file *s, void *v)
-{
-    int i, count, gpu;
-    char name[NV_CAP_NAME_BUF_SIZE];
-
-    count = NV_CAP_NUM_ENTRIES(g_nv_cap_mig_table);
-    for (i = 0; i < count; i++)
-    {
-        if (sscanf(g_nv_cap_mig_table[i].name,
-                   "/driver/nvidia/capabilities/mig/%s", name) == 1)
-        {
-            name[sizeof(name) - 1] = '\0';
-            seq_printf(s, "%s %d\n", name, g_nv_cap_mig_table[i].minor);
-        }
-    }
-
-    count = NV_CAP_NUM_ENTRIES(g_nv_cap_mig_gpu_table);
-    for (i = 0; i < count; i++)
-    {
-        if (sscanf(g_nv_cap_mig_gpu_table[i].name,
-                   "/driver/nvidia/capabilities/gpu%d/mig/%s", &gpu, name) == 2)
-        {
-            name[sizeof(name) - 1] = '\0';
-            seq_printf(s, "gpu%d/%s %d\n",
-                       gpu, name, g_nv_cap_mig_gpu_table[i].minor);
-        }
-    }
-
-    return 0;
-}
-
-NV_DEFINE_SINGLE_PROCFS_FILE_READ_ONLY(nvlink_minors, nv_system_pm_lock);
-
-NV_DEFINE_SINGLE_PROCFS_FILE_READ_ONLY(mig_minors, nv_system_pm_lock);
-
-NV_DEFINE_SINGLE_PROCFS_FILE_READ_ONLY(sys_minors, nv_system_pm_lock);
-
-static void nv_cap_procfs_exit(void)
-{
-    if (!nv_cap_procfs_dir)
-    {
-        return;
-    }
-
-#if defined(CONFIG_PROC_FS)
-    proc_remove(nv_cap_procfs_dir);
-#endif
-    nv_cap_procfs_dir = NULL;
-}
-
-int nv_cap_procfs_init(void)
-{
-    static struct proc_dir_entry *file_entry;
-
-    nv_cap_procfs_dir = NV_CREATE_PROC_DIR(NV_CAP_PROCFS_DIR, NULL);
-    if (nv_cap_procfs_dir == NULL)
-    {
-        return -EACCES;
-    }
-
-    file_entry = NV_CREATE_PROC_FILE("mig-minors", nv_cap_procfs_dir,
-                                     mig_minors, NULL);
-    if (file_entry == NULL)
-    {
-        goto cleanup;
-    }
-
-    file_entry = NV_CREATE_PROC_FILE("nvlink-minors", nv_cap_procfs_dir,
-                                     nvlink_minors, NULL);
-    if (file_entry == NULL)
-    {
-        goto cleanup;
-    }
-
-    file_entry = NV_CREATE_PROC_FILE("sys-minors", nv_cap_procfs_dir,
-                                     sys_minors, NULL);
-    if (file_entry == NULL)
-    {
-        goto cleanup;
-    }
-
-    return 0;
-
-cleanup:
-    nv_cap_procfs_exit();
-
-    return -EACCES;
-}
-
 static int nv_cap_find_minor(char *path)
 {
-    unsigned int key = nv_cap_hash_key(path);
-    nv_cap_table_entry_t *entry;
-
-    nv_hash_for_each_possible(g_nv_cap_hash_table, entry, hlist, key)
-    {
-        if (strcmp(path, entry->name) == 0)
-        {
-            return entry->minor;
-        }
-    }
-
     return -1;
 }
 
 static void _nv_cap_table_init(nv_cap_table_entry_t *table, int count)
 {
     int i;
-    unsigned int key;
     static int minor = 0;
 
     for (i = 0; i < count; i++)
     {
         table[i].minor = minor++;
-        INIT_HLIST_NODE(&table[i].hlist);
-        key = nv_cap_hash_key(table[i].name);
-        nv_hash_add(g_nv_cap_hash_table, &table[i].hlist, key);
+        list_init_member(&table[i].hlist);
     }
 
     WARN_ON(minor > NV_CAP_DRV_MINOR_COUNT);
@@ -343,7 +187,7 @@ static void _nv_cap_table_init(nv_cap_table_entry_t *table, int count)
 
 static void nv_cap_tables_init(void)
 {
-    BUILD_BUG_ON(offsetof(nv_cap_table_entry_t, name) != 0);
+    BUILD_BUG_ON(offsetof(nv_cap_table_entry_t *, name) != 0);
 
     nv_hash_init(g_nv_cap_hash_table);
 
@@ -353,230 +197,31 @@ static void nv_cap_tables_init(void)
     nv_cap_table_init(g_nv_cap_sys_table);
 }
 
-static ssize_t nv_cap_procfs_write(struct file *file,
-                                    const char __user *buffer,
-                                    size_t count, loff_t *pos)
-{
-    nv_cap_file_private_t *private = NULL;
-    unsigned long bytes_left;
-    char *proc_buffer;
-
-    private = ((struct seq_file *)file->private_data)->private;
-    bytes_left = (sizeof(private->buffer) - private->offset - 1);
-
-    if (count == 0)
-    {
-        return -EINVAL;
-    }
-
-    if ((bytes_left == 0) || (count > bytes_left))
-    {
-        return -ENOSPC;
-    }
-
-    proc_buffer = &private->buffer[private->offset];
-
-    if (copy_from_user(proc_buffer, buffer, count))
-    {
-        nv_printf(NV_DBG_ERRORS, "nv-caps: failed to copy in proc data!\n");
-        return -EFAULT;
-    }
-
-    private->offset += count;
-    proc_buffer[count] = '\0';
-
-    *pos = private->offset;
-
-    return count;
-}
-
-static int nv_cap_procfs_read(struct seq_file *s, void *v)
-{
-    nv_cap_file_private_t *private = s->private;
-
-    seq_printf(s, "%s: %d\n", "DeviceFileMinor", private->minor);
-    seq_printf(s, "%s: %d\n", "DeviceFileMode", private->permissions);
-    seq_printf(s, "%s: %d\n", "DeviceFileModify", private->modify);
-
-    return 0;
-}
-
-static int nv_cap_procfs_open(struct inode *inode, struct file *file)
-{
-    nv_cap_file_private_t *private = NULL;
-    int rc;
-    nv_cap_t *cap = NV_PDE_DATA(inode);
-
-    NV_KMALLOC(private, sizeof(nv_cap_file_private_t));
-    if (private == NULL)
-    {
-        return -ENOMEM;
-    }
-
-    private->minor = cap->minor;
-    private->permissions = cap->permissions;
-    private->offset = 0;
-    private->modify = cap->modify;
-
-    rc = single_open(file, nv_cap_procfs_read, private);
-    if (rc < 0)
-    {
-        NV_KFREE(private, sizeof(nv_cap_file_private_t));
-        return rc;
-    }
-
-    rc = nv_down_read_interruptible(&nv_system_pm_lock);
-    if (rc < 0)
-    {
-        single_release(inode, file);
-        NV_KFREE(private, sizeof(nv_cap_file_private_t));
-    }
-
-    return rc;
-}
-
-static int nv_cap_procfs_release(struct inode *inode, struct file *file)
-{
-    struct seq_file *s = file->private_data;
-    nv_cap_file_private_t *private = NULL;
-    char *buffer;
-    int modify;
-    nv_cap_t *cap = NV_PDE_DATA(inode);
-
-    if (s != NULL)
-    {
-        private = s->private;
-    }
-
-    up_read(&nv_system_pm_lock);
-
-    single_release(inode, file);
-
-    if (private != NULL)
-    {
-        buffer = private->buffer;
-
-        if (private->offset != 0)
-        {
-            if (sscanf(buffer, "DeviceFileModify: %d", &modify) == 1)
-            {
-                cap->modify = modify;
-            }
-        }
-
-        NV_KFREE(private, sizeof(nv_cap_file_private_t));
-    }
-
-    /*
-     * All open files using the proc entry will be invalidated
-     * if the entry is removed.
-     */
-    file->private_data = NULL;
-
-    return 0;
-}
-
-static nv_proc_ops_t g_nv_cap_procfs_fops = {
-    NV_PROC_OPS_SET_OWNER()
-    .NV_PROC_OPS_OPEN    = nv_cap_procfs_open,
-    .NV_PROC_OPS_RELEASE = nv_cap_procfs_release,
-    .NV_PROC_OPS_WRITE   = nv_cap_procfs_write,
-    .NV_PROC_OPS_READ    = seq_read,
-    .NV_PROC_OPS_LSEEK   = seq_lseek,
-};
-
-/* forward declaration of g_nv_cap_drv_fops */
-static struct file_operations g_nv_cap_drv_fops;
-
 int NV_API_CALL nv_cap_validate_and_dup_fd(const nv_cap_t *cap, int fd)
 {
-    struct file *file;
+    fdesc f;
     int dup_fd;
-    struct inode *inode = NULL;
-    dev_t rdev = 0;
-    struct files_struct *files = current->files;
-    struct fdtable *fdt;
 
     if (cap == NULL)
     {
         return -1;
     }
 
-    file = fget(fd);
-    if (file == NULL)
-    {
-        return -1;
-    }
+    f = resolve_fd(current->p, fd);
 
-    inode = NV_FILE_INODE(file);
-    if (inode == NULL)
-    {
-        goto err;
-    }
-
-    /* Make sure the fd belongs to the nv-cap-drv */
-    if (file->f_op != &g_nv_cap_drv_fops)
-    {
-        goto err;
-    }
-
-    /* Make sure the fd has the expected capability */
-    rdev = inode->i_rdev;
-    if (MINOR(rdev) != cap->minor)
-    {
-        goto err;
-    }
-
-    dup_fd = NV_GET_UNUSED_FD_FLAGS(O_CLOEXEC);
+    dup_fd = allocate_fd(current->p, f);
+    fdesc_put(f);
     if (dup_fd < 0)
     {
-        dup_fd = NV_GET_UNUSED_FD();
-        if (dup_fd < 0)
-        {
-            goto err;
-        }
-
-        /*
-         * Set CLOEXEC before installing the FD.
-         *
-         * If fork() happens in between, the opened unused FD will have
-         * a NULL struct file associated with it, which is okay.
-         *
-         * The only well known bug here is the race with dup(2), which is
-         * already documented in the kernel, see fd_install()'s description.
-         */
-
-        spin_lock(&files->file_lock);
-        fdt = files_fdtable(files);
-        __set_bit(dup_fd, fdt->close_on_exec);
-        spin_unlock(&files->file_lock);
     }
 
-    fd_install(dup_fd, file);
     return dup_fd;
-
-err:
-    fput(file);
-    return -1;
 }
 
 void NV_API_CALL nv_cap_close_fd(int fd)
 {
     if (fd == -1)
     {
-        return;
-    }
-
-    /*
-     * Acquire task_lock as we access current->files explicitly (__close_fd)
-     * and implicitly (sys_close), and it will race with the exit path.
-     */
-    task_lock(current);
-
-    /* Nothing to do, we are in exit path */
-    if (current->files == NULL)
-    {
-        task_unlock(current);
         return;
     }
 
@@ -595,15 +240,15 @@ void NV_API_CALL nv_cap_close_fd(int fd)
 #elif NV_IS_EXPORT_SYMBOL_PRESENT___close_fd
     __close_fd(current->files, fd);
 #else
-    sys_close(fd);
+    extern sysreturn close(int fd);
+    close(fd);
 #endif
-
-    task_unlock(current);
 }
 
 static nv_cap_t* nv_cap_alloc(nv_cap_t *parent_cap, const char *name)
 {
     nv_cap_t *cap;
+    int name_len, path_len;
     int len;
 
     if (parent_cap == NULL || name == NULL)
@@ -617,7 +262,9 @@ static nv_cap_t* nv_cap_alloc(nv_cap_t *parent_cap, const char *name)
         return NULL;
     }
 
-    len = strlen(name) + strlen(parent_cap->path) + 2;
+    name_len = strlen(name);
+    path_len = strlen(parent_cap->path);
+    len = name_len + path_len + 2;
     NV_KMALLOC(cap->path, len);
     if (cap->path == NULL)
     {
@@ -625,11 +272,11 @@ static nv_cap_t* nv_cap_alloc(nv_cap_t *parent_cap, const char *name)
         return NULL;
     }
 
-    strcpy(cap->path, parent_cap->path);
-    strcat(cap->path, "/");
-    strcat(cap->path, name);
+    runtime_memcpy(cap->path, parent_cap->path, path_len);
+    cap->path[path_len] = '/';
+    runtime_memcpy(cap->path + path_len + 1, name, name_len + 1);
 
-    len = strlen(name) + 1;
+    len = name_len + 1;
     NV_KMALLOC(cap->name, len);
     if (cap->name == NULL)
     {
@@ -638,7 +285,7 @@ static nv_cap_t* nv_cap_alloc(nv_cap_t *parent_cap, const char *name)
         return NULL;
     }
 
-    strcpy(cap->name, name);
+    runtime_memcpy(cap->name, name, name_len + 1);
 
     cap->minor = -1;
     cap->modify = NVreg_ModifyDeviceFiles;
@@ -673,8 +320,6 @@ nv_cap_t* NV_API_CALL nv_cap_create_file_entry(nv_cap_t *parent_cap,
     cap->parent = parent_cap->entry;
     cap->permissions = mode;
 
-    mode = (S_IFREG | S_IRUGO);
-
     minor = nv_cap_find_minor(cap->path);
     if (minor < 0)
     {
@@ -684,8 +329,7 @@ nv_cap_t* NV_API_CALL nv_cap_create_file_entry(nv_cap_t *parent_cap,
 
     cap->minor = minor;
 
-    cap->entry = proc_create_data(name, mode, parent_cap->entry,
-                                  &g_nv_cap_procfs_fops, (void*)cap);
+    cap->entry = NULL;
     if (cap->entry == NULL)
     {
         nv_cap_free(cap);
@@ -710,9 +354,7 @@ nv_cap_t* NV_API_CALL nv_cap_create_dir_entry(nv_cap_t *parent_cap,
     cap->permissions = mode;
     cap->minor = -1;
 
-    mode = (S_IFDIR | S_IRUGO | S_IXUGO);
-
-    cap->entry = NV_PROC_MKDIR_MODE(name, mode, parent_cap->entry);
+    cap->entry = NULL;
     if (cap->entry == NULL)
     {
         nv_cap_free(cap);
@@ -727,6 +369,7 @@ nv_cap_t* NV_API_CALL nv_cap_init(const char *path)
     nv_cap_t parent_cap;
     nv_cap_t *cap;
     int mode;
+    int path_len = strlen(path);
     char *name = NULL;
     char dir[] = "/capabilities";
 
@@ -735,18 +378,18 @@ nv_cap_t* NV_API_CALL nv_cap_init(const char *path)
         return NULL;
     }
 
-    NV_KMALLOC(name, (strlen(path) + strlen(dir)) + 1);
+    NV_KMALLOC(name, (path_len + strlen(dir)) + 1);
     if (name == NULL)
     {
         return NULL;
     }
 
-    strcpy(name, path);
-    strcat(name, dir);
+    runtime_memcpy(name, path, path_len);
+    runtime_memcpy(name + path_len, dir, sizeof(dir));
     parent_cap.entry = NULL;
     parent_cap.path = "";
     parent_cap.name = "";
-    mode =  S_IRUGO | S_IXUGO;
+    mode = 0;
     cap = nv_cap_create_dir_entry(&parent_cap, name, mode);
 
     NV_KFREE(name, strlen(name) + 1);
@@ -760,31 +403,11 @@ void NV_API_CALL nv_cap_destroy_entry(nv_cap_t *cap)
         return;
     }
 
-    remove_proc_entry(cap->name, cap->parent);
     nv_cap_free(cap);
 }
 
-static int nv_cap_drv_open(struct inode *inode, struct file *file)
-{
-    return 0;
-}
-
-static int nv_cap_drv_release(struct inode *inode, struct file *file)
-{
-    return 0;
-}
-
-static struct file_operations g_nv_cap_drv_fops =
-{
-    .owner = THIS_MODULE,
-    .open    = nv_cap_drv_open,
-    .release = nv_cap_drv_release
-};
-
 int NV_API_CALL nv_cap_drv_init(void)
 {
-    int rc;
-
     nv_cap_tables_init();
 
     if (g_nv_cap_drv.initialized)
@@ -793,46 +416,9 @@ int NV_API_CALL nv_cap_drv_init(void)
         return -EBUSY;
     }
 
-    rc = alloc_chrdev_region(&g_nv_cap_drv.devno,
-                             0,
-                             NV_CAP_DRV_MINOR_COUNT,
-                             "nvidia-caps");
-    if (rc < 0)
-    {
-        nv_printf(NV_DBG_ERRORS, "nv-caps-drv failed to create cdev region.\n");
-        return rc;
-    }
-
-    cdev_init(&g_nv_cap_drv.cdev, &g_nv_cap_drv_fops);
-
-    g_nv_cap_drv.cdev.owner = THIS_MODULE;
-
-    rc = cdev_add(&g_nv_cap_drv.cdev, g_nv_cap_drv.devno,
-                  NV_CAP_DRV_MINOR_COUNT);
-    if (rc < 0)
-    {
-        nv_printf(NV_DBG_ERRORS, "nv-caps-drv failed to create cdev.\n");
-        goto cdev_add_fail;
-    }
-
-    rc = nv_cap_procfs_init();
-    if (rc < 0)
-    {
-        nv_printf(NV_DBG_ERRORS, "nv-caps-drv: unable to init proc\n");
-        goto proc_init_fail;
-    }
-
     g_nv_cap_drv.initialized = NV_TRUE;
 
     return 0;
-
-proc_init_fail:
-    cdev_del(&g_nv_cap_drv.cdev);
-
-cdev_add_fail:
-    unregister_chrdev_region(g_nv_cap_drv.devno, NV_CAP_DRV_MINOR_COUNT);
-
-    return rc;
 }
 
 void NV_API_CALL nv_cap_drv_exit(void)
@@ -841,12 +427,6 @@ void NV_API_CALL nv_cap_drv_exit(void)
     {
         return;
     }
-
-    nv_cap_procfs_exit();
-
-    cdev_del(&g_nv_cap_drv.cdev);
-
-    unregister_chrdev_region(g_nv_cap_drv.devno, NV_CAP_DRV_MINOR_COUNT);
 
     g_nv_cap_drv.initialized = NV_FALSE;
 }

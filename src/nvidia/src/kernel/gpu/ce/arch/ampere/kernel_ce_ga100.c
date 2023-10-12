@@ -754,7 +754,7 @@ kceMapPceLceForNvlinkPeers_GA100
     NvU32         peerAvailableLceMask = NV_CE_LCE_MASK_INIT;
     OBJGPU       *pRemoteGpu;
     NvU32         numPcePerLink;
-    NvU32         lceIndex, pceIndex;
+    NvU32         lceIndex, pceIndex = 0;
     NvU32         linkId, gpuMask, gpuInstance = 0, i;
     NvU8          hshubId, prevHshubId;
     NV2080_CTRL_INTERNAL_HSHUB_GET_HSHUB_ID_FOR_LINKS_PARAMS *pParams = NULL;

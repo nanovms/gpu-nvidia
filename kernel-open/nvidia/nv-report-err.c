@@ -22,7 +22,7 @@
  */
 
 #define  __NO_VERSION__
-#include "nv-linux.h"
+#include "nv-nanos.h"
 #include "os-interface.h"
 
 #include "nv-report-err.h"
@@ -63,27 +63,7 @@ void nv_report_error(
     va_list         ap
 )
 {
-    va_list ap_copy;
-    char *buffer;
-    int length = 0;
-    int status = NV_OK;
-
     if (nv_error_cb_handle != NULL)
     {
-        va_copy(ap_copy, ap);
-        length = vsnprintf(NULL, 0, format, ap);
-        va_end(ap_copy);
-
-        if (length > 0)
-        {
-            status = os_alloc_mem((void *)&buffer, (length + 1)*sizeof(char));
-
-            if (status == NV_OK)
-            {
-                vsnprintf(buffer, length, format, ap);
-                nv_error_cb_handle(dev, error_number, buffer, length + 1);
-                os_free_mem(buffer);
-            }
-        }
     }
 }

@@ -25,7 +25,6 @@
 #define LIBOS_LOGGER_H_
 
 #include "nvtypes.h"
-#include <stdarg.h>
 #include "libos_printf_arg.h"
 
 /**

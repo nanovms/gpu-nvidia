@@ -51,7 +51,6 @@
 #ifndef NO_SYS_HEADERS
 #define NO_SYS_HEADERS
 #endif
-#include <stddef.h> /* NULL */
 #if     defined(__cplusplus) && !defined(_NO_INLINE)
 #define _INLINE inline
 #else
@@ -65,6 +64,8 @@
 #else
 #define X86EMU_UNUSED(v)        v
 #endif
+
+#include <nv.h>
 
 #include "x86emu.h"
 #include "x86emu/regs.h"

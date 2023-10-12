@@ -34,12 +34,12 @@ struct UvmOpsUvmEvents;
 #if defined(NVIDIA_UVM_ENABLED)
 
 // We are in the UVM build system, for a Linux target.
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 
 #else
 
 // We are in the RM build system, for a Linux target:
-#include "nv-linux.h"
+#include "nv-nanos.h"
 
 #endif // NVIDIA_UVM_ENABLED
 

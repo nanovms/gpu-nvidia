@@ -26,7 +26,7 @@
 
 #include "uvm_extern_decl.h"
 #include "uvm_forward_decl.h"
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "nv-procfs.h"
 #include "conftest.h"
 
@@ -47,7 +47,7 @@ static bool uvm_procfs_is_enabled(void)
 // created.
 static bool uvm_procfs_is_debug_enabled(void)
 {
-    return uvm_enable_debug_procfs != 0;
+    return false;
 }
 
 struct proc_dir_entry *uvm_procfs_get_gpu_base_dir(void);

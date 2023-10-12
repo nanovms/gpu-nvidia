@@ -24,7 +24,7 @@
 #ifndef __UVM_KVMALLOC_H__
 #define __UVM_KVMALLOC_H__
 
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_test_ioctl.h"
 
 // kmalloc is faster than vmalloc because it doesn't have to remap kernel
@@ -41,7 +41,7 @@
 //
 // This is in the header so callers can use it to inform their allocation sizes
 // if they wish.
-#define UVM_KMALLOC_THRESHOLD (4*PAGE_SIZE)
+#define UVM_KMALLOC_THRESHOLD infinity
 
 NV_STATUS uvm_kvmalloc_init(void);
 void uvm_kvmalloc_exit(void);

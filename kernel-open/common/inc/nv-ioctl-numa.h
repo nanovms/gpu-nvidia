@@ -35,7 +35,10 @@
 
 #else
 
-#include <stdint.h>
+#ifndef _KERNEL_H_
+#include <kernel.h>
+#define _KERNEL_H_
+#endif
 
 #if !defined(__aligned)
 #define __aligned(n) __attribute__((aligned(n)))
@@ -49,27 +52,27 @@
 #define NV_IOCTL_NUMA_INFO_MAX_OFFLINE_ADDRESSES 64
 typedef struct offline_addresses
 {
-    uint64_t addresses[NV_IOCTL_NUMA_INFO_MAX_OFFLINE_ADDRESSES] __aligned(8);
-    uint32_t numEntries;
+    u64 addresses[NV_IOCTL_NUMA_INFO_MAX_OFFLINE_ADDRESSES] __aligned(8);
+    u32 numEntries;
 } nv_offline_addresses_t;
 
 
 /* per-device NUMA memory info as assigned by the system */
 typedef struct nv_ioctl_numa_info
 {
-    int32_t  nid;
-    int32_t  status;
-    uint64_t memblock_size __aligned(8);
-    uint64_t numa_mem_addr __aligned(8);
-    uint64_t numa_mem_size __aligned(8);
-    uint8_t  use_auto_online;
+    s32 nid;
+    s32 status;
+    u64 memblock_size __aligned(8);
+    u64 numa_mem_addr __aligned(8);
+    u64 numa_mem_size __aligned(8);
+    u8  use_auto_online;
     nv_offline_addresses_t offline_addresses __aligned(8);
 } nv_ioctl_numa_info_t;
 
 /* set the status of the device NUMA memory */
 typedef struct nv_ioctl_set_numa_status
 {
-    int32_t status;
+    s32 status;
 } nv_ioctl_set_numa_status_t;
 
 #define NV_IOCTL_NUMA_STATUS_DISABLED               0

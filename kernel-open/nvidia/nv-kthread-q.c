@@ -21,19 +21,12 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
+#include "nv-nanos.h"
 #include "nv-kthread-q.h"
 #include "nv-list-helpers.h"
 
-#include <linux/kthread.h>
-#include <linux/interrupt.h>
-#include <linux/completion.h>
-#include <linux/module.h>
-#include <linux/mm.h>
-
 #if defined(NV_LINUX_BUG_H_PRESENT)
     #include <linux/bug.h>
-#else
-    #include <asm/bug.h>
 #endif
 
 // Today's implementation is a little simpler and more limited than the
@@ -67,7 +60,7 @@
         }                                                    \
         else {                                               \
             WARN(1, "nv_kthread_q: task: %s: " fmt,          \
-                 current->comm,                              \
+                 current->name,                              \
                  ##__VA_ARGS__);                             \
         }                                                    \
     } while (0)
@@ -115,16 +108,14 @@ static int _main_loop(void *args)
         q_item = NULL;
     }
 
-    while (!kthread_should_stop())
-        schedule();
-
-    return 0;
+    q->ctx = NULL;
+    kern_yield();
 }
 
 void nv_kthread_q_stop(nv_kthread_q_t *q)
 {
     // check if queue has been properly initialized
-    if (unlikely(!q->q_kthread))
+    if (unlikely(!q->ctx))
         return;
 
     nv_kthread_q_flush(q);
@@ -141,84 +132,13 @@ void nv_kthread_q_stop(nv_kthread_q_t *q)
 
         // Wake up the kthread so that it can see that it needs to stop:
         up(&q->q_sem);
-
-        kthread_stop(q->q_kthread);
-        q->q_kthread = NULL;
     }
-}
-
-// When CONFIG_VMAP_STACK is defined, the kernel thread stack allocator used by
-// kthread_create_on_node relies on a 2 entry, per-core cache to minimize
-// vmalloc invocations. The cache is NUMA-unaware, so when there is a hit, the
-// stack location ends up being a function of the core assigned to the current
-// thread, instead of being a function of the specified NUMA node. The cache was
-// added to the kernel in commit ac496bf48d97f2503eaa353996a4dd5e4383eaf0
-// ("fork: Optimize task creation by caching two thread stacks per CPU if
-// CONFIG_VMAP_STACK=y")
-//
-// To work around the problematic cache, we create up to three kernel threads
-//   -If the first thread's stack is resident on the preferred node, return this
-//    thread.
-//   -Otherwise, create a second thread. If its stack is resident on the
-//    preferred node, stop the first thread and return this one.
-//   -Otherwise, create a third thread. The stack allocator does not find a
-//    cached stack, and so falls back to vmalloc, which takes the NUMA hint into
-//    consideration. The first two threads are then stopped.
-//
-// When CONFIG_VMAP_STACK is not defined, the first kernel thread is returned.
-//
-// This function is never invoked when there is no NUMA preference (preferred
-// node is NUMA_NO_NODE).
-static struct task_struct *thread_create_on_node(int (*threadfn)(void *data),
-                                                 nv_kthread_q_t *q,
-                                                 int preferred_node,
-                                                 const char *q_name)
-{
-
-    unsigned i, j;
-    const static unsigned attempts = 3;
-    struct task_struct *thread[3];
-
-    for (i = 0;; i++) {
-        struct page *stack;
-
-        thread[i] = kthread_create_on_node(threadfn, q, preferred_node, q_name);
-
-        if (unlikely(IS_ERR(thread[i]))) {
-
-            // Instead of failing, pick the previous thread, even if its
-            // stack is not allocated on the preferred node.
-            if (i > 0)
-                i--;
-
-            break;
-        }
-
-        // vmalloc is not used to allocate the stack, so simply return the
-        // thread, even if its stack may not be allocated on the preferred node
-        if (!is_vmalloc_addr(thread[i]->stack))
-            break;
-
-        // Ran out of attempts - return thread even if its stack may not be
-        // allocated on the preferred node
-        if ((i == (attempts - 1)))
-            break;
-
-        // Get the NUMA node where the first page of the stack is resident. If
-        // it is the preferred node, select this thread.
-        stack = vmalloc_to_page(thread[i]->stack);
-        if (page_to_nid(stack) == preferred_node)
-            break;
-    }
-
-    for (j = i; j > 0; j--)
-        kthread_stop(thread[j - 1]);
-
-    return thread[i];
 }
 
 int nv_kthread_q_init_on_node(nv_kthread_q_t *q, const char *q_name, int preferred_node)
 {
+    u64 *f;
+
     memset(q, 0, sizeof(*q));
 
     INIT_LIST_HEAD(&q->q_list_head);
@@ -226,23 +146,35 @@ int nv_kthread_q_init_on_node(nv_kthread_q_t *q, const char *q_name, int preferr
     sema_init(&q->q_sem, 0);
 
     if (preferred_node == NV_KTHREAD_NO_NODE) {
-        q->q_kthread = kthread_create(_main_loop, q, q_name);
+        q->ctx = (context)allocate_kernel_context(current_cpu());
     }
     else {
-        q->q_kthread = thread_create_on_node(_main_loop, q, preferred_node, q_name);
+        return -ENOTSUPP;
     }
 
-    if (IS_ERR(q->q_kthread)) {
-        int err = PTR_ERR(q->q_kthread);
+    if (q->ctx == INVALID_ADDRESS) {
+        int err = -ENOMEM;
 
         // Clear q_kthread before returning so that nv_kthread_q_stop() can be
         // safely called on it making error handling easier.
-        q->q_kthread = NULL;
+        q->ctx = NULL;
 
         return err;
     }
 
-    wake_up_process(q->q_kthread);
+    f = q->ctx->frame;
+#if defined(NVCPU_X86_64)
+    f[FRAME_RIP] = u64_from_pointer(_main_loop);
+    f[FRAME_RDI] = u64_from_pointer(q);
+    f[FRAME_CS] = 0x8;
+    f[FRAME_SS] = 0x0;
+#elif defined(NVCPU_AARCH64)
+    f[FRAME_ELR] = u64_from_pointer(_main_loop);
+    f[FRAME_X0] = u64_from_pointer(q);
+#endif
+    frame_reset_stack(f);
+    f[FRAME_FULL] = true;
+    context_schedule_return(q->ctx);
 
     return 0;
 }
@@ -293,24 +225,25 @@ int nv_kthread_q_schedule_q_item(nv_kthread_q_t *q,
 
 static void _q_flush_function(void *args)
 {
-    struct completion *completion = (struct completion *)args;
-    complete(completion);
+    boolean *done = args;
+    *done = true;
 }
 
 
 static void _raw_q_flush(nv_kthread_q_t *q)
 {
     nv_kthread_q_item_t q_item;
-    DECLARE_COMPLETION_ONSTACK(completion);
+    volatile boolean done = false;
 
-    nv_kthread_q_item_init(&q_item, _q_flush_function, &completion);
+    nv_kthread_q_item_init(&q_item, _q_flush_function, (void *)&done);
 
     _raw_q_schedule(q, &q_item);
 
     // Wait for the flush item to run. Once it has run, then all of the
     // previously queued items in front of it will have run, so that means
     // the flush is complete.
-    wait_for_completion(&completion);
+    while (!done)
+        os_schedule();
 }
 
 void nv_kthread_q_flush(nv_kthread_q_t *q)

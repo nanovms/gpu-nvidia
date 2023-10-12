@@ -31,7 +31,6 @@
 #include "nvport/nvport.h"
 #include "rmapi/rmapi.h"
 #include "ctrl/ctrlc56f.h"
-#include <stddef.h>
 // This guard is here until we fix CONF_COMPUTE and SPDM guards across whole RM
 #include "kernel/gpu/spdm/libspdm_includes.h"
 #include <hal/library/cryptlib.h>
@@ -641,7 +640,7 @@ ccslQueryMessagePool_IMPL
     NvU64        *messageNum
 )
 {
-    NvU64 limit;
+    NvU64 limit = 0;
     NvU64 messageCounter;
 
     switch (direction)

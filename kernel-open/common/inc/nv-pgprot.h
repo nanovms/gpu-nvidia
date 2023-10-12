@@ -27,16 +27,13 @@
 
 #include "cpuopsys.h"
 
-#include <linux/mm.h>
-
 #if !defined(NV_VMWARE)
 #if defined(NVCPU_X86_64)
 /* mark memory UC-, rather than UC (don't use _PAGE_PWT) */
 static inline pgprot_t pgprot_noncached_weak(pgprot_t old_prot)
     {
         pgprot_t new_prot = old_prot;
-        if (boot_cpu_data.x86 > 3)
-            new_prot = __pgprot(pgprot_val(old_prot) | _PAGE_PCD);
+        new_prot.w |= PAGE_CACHE_DISABLE;
         return new_prot;
     }
 
@@ -44,16 +41,15 @@ static inline pgprot_t pgprot_noncached_weak(pgprot_t old_prot)
 static inline pgprot_t pgprot_noncached(pgprot_t old_prot)
     {
         pgprot_t new_prot = old_prot;
-        if (boot_cpu_data.x86 > 3)
-            new_prot = __pgprot(pgprot_val(old_prot) | _PAGE_PCD | _PAGE_PWT);
+        new_prot.w |= PAGE_CACHE_DISABLE | PAGE_WRITETHROUGH;
         return new_prot;
     }
 #endif
 static inline pgprot_t pgprot_modify_writecombine(pgprot_t old_prot)
     {
         pgprot_t new_prot = old_prot;
-        pgprot_val(new_prot) &= ~(_PAGE_PSE | _PAGE_PCD | _PAGE_PWT);
-        new_prot = __pgprot(pgprot_val(new_prot) | _PAGE_PWT);
+        new_prot.w &= ~(PAGE_PS | PAGE_CACHE_DISABLE);
+        new_prot.w |= PAGE_WRITETHROUGH;
         return new_prot;
     }
 #endif /* defined(NVCPU_X86_64) */

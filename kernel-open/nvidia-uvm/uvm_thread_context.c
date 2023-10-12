@@ -24,7 +24,7 @@
 #include "uvm_forward_decl.h"
 #include "uvm_thread_context.h"
 
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_common.h"
 
 // Thread local storage implementation.
@@ -70,6 +70,8 @@ typedef struct  {
 
 // The thread's context information is stored in the array or the red-black
 // tree.
+declare_closure_struct(0, 2, int, uvm_threadctx_compare,
+                       rbnode, a, rbnode, b);
 typedef struct  {
     // Small array where thread contexts are stored first. Each array entry
     // can be atomically claimed or released.
@@ -79,7 +81,8 @@ typedef struct  {
     // because additions and removals are frequent operations: every time the
     // UVM module is entered, there is one addition, one removal, and one
     // lookup. The same UVM call may result on additional lookups.
-    struct rb_root tree;
+    struct rbtree tree;
+    closure_struct(uvm_threadctx_compare, compare);
 
     // Spinlock protecting the tree. A raw lock is chosen because UVM locks
     // rely on thread context information to be available for lock tracking.
@@ -116,6 +119,17 @@ bool uvm_thread_context_global_initialized(void)
     return g_thread_context_table_initialized;
 }
 
+define_closure_function(0, 2, int, uvm_threadctx_compare,
+                 rbnode, a, rbnode, b)
+{
+    uvm_thread_context_t *thread_context_a = rb_entry(a, uvm_thread_context_t, node);
+    uvm_thread_context_t *thread_context_b = rb_entry(b, uvm_thread_context_t, node);
+    uintptr_t task_a = (uintptr_t) thread_context_a->task;
+    uintptr_t task_b = (uintptr_t) thread_context_b->task;
+
+    return (task_a == task_b) ? 0 : ((task_a < task_b) ? -1 : 1);
+}
+
 void uvm_thread_context_global_init(void)
 {
     size_t table_index;
@@ -126,7 +140,8 @@ void uvm_thread_context_global_init(void)
         uvm_thread_context_table_entry_t *table_entry = g_thread_context_table + table_index;
 
         spin_lock_init(&table_entry->tree_lock);
-        table_entry->tree = RB_ROOT;
+        init_rbtree(&table_entry->tree,
+                    init_closure(&table_entry->compare, uvm_threadctx_compare), 0);
     }
 
     g_thread_context_table_initialized = true;
@@ -147,7 +162,7 @@ void uvm_thread_context_global_exit(void)
     // shutdown already happened and skip.
     for (table_index = 0; table_index < UVM_THREAD_CONTEXT_TABLE_SIZE; table_index++) {
         size_t array_index;
-        struct rb_node *node;
+        rbnode node;
         uvm_thread_context_table_entry_t *table_entry = g_thread_context_table + table_index;
 
         for (array_index = 0; array_index < UVM_THREAD_CONTEXT_ARRAY_SIZE; array_index++) {
@@ -187,9 +202,9 @@ void uvm_thread_context_global_exit(void)
     g_thread_context_table_initialized = false;
 }
 
-static uvm_thread_context_t *thread_context_non_interrupt_tree_search(struct rb_root *root, struct task_struct *task)
+static uvm_thread_context_t *thread_context_non_interrupt_tree_search(rbtree root, thread task)
 {
-    struct rb_node *node = root->rb_node;
+    rbnode node = root->root;
     uintptr_t task_uintptr = (uintptr_t) task;
 
     while (node) {
@@ -199,18 +214,17 @@ static uvm_thread_context_t *thread_context_non_interrupt_tree_search(struct rb_
        if (thread_context_task_uintptr == task_uintptr)
            return thread_context;
 
-       node = (thread_context_task_uintptr > task_uintptr)? node->rb_left : node->rb_right;
+       node = (thread_context_task_uintptr > task_uintptr)? node->c[0] : node->c[1];
     }
 
     return NULL;
 }
 
-static bool thread_context_non_interrupt_tree_insert(struct rb_root *root, uvm_thread_context_t *new_thread_context)
+static bool thread_context_non_interrupt_tree_insert(rbtree root, uvm_thread_context_t *new_thread_context)
 {
-    struct rb_node **node_ptr = &root->rb_node;
-    struct rb_node *node = root->rb_node;
-    struct rb_node *parent = NULL;
-    const struct task_struct *task = new_thread_context->task;
+    rbnode *node_ptr = &root->root;
+    rbnode node = root->root;
+    const thread task = new_thread_context->task;
     uintptr_t task_uintptr = (uintptr_t) task;
 
     while (node) {
@@ -220,13 +234,12 @@ static bool thread_context_non_interrupt_tree_insert(struct rb_root *root, uvm_t
        if (thread_context_task_uintptr == task_uintptr)
             return false;
 
-        parent = node;
-        node_ptr = (thread_context_task_uintptr > task_uintptr) ? &node->rb_left : &node->rb_right;
+        node_ptr = (thread_context_task_uintptr > task_uintptr) ? &node->c[0] : &node->c[1];
         node = *node_ptr;
     }
 
-    rb_link_node(&new_thread_context->node, parent, node_ptr);
-    rb_insert_color(&new_thread_context->node, root);
+    init_rbnode(&new_thread_context->node);
+    rbtree_insert_node(root, &new_thread_context->node);
 
     return true;
 }
@@ -314,7 +327,7 @@ static uvm_thread_context_table_entry_t *thread_context_non_interrupt_table_entr
 {
     size_t table_index;
     NvU64 current_ptr = (NvU64) current;
-    NvU32 hash = jhash_2words((NvU32) current_ptr, (NvU32) (current_ptr >> 32), 0);
+    NvU32 hash = hash_64(current_ptr);
 
     BUILD_BUG_ON(UVM_THREAD_CONTEXT_TABLE_SIZE > (1 << 16));
     BUILD_BUG_ON(UVM_THREAD_CONTEXT_ARRAY_SIZE > (1 << 16));

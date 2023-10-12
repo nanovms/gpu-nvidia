@@ -26,7 +26,7 @@
 
 #include "uvm_forward_decl.h"
 #include "uvm_types.h"
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "nv-kref.h"
 #include "uvm_common.h"
 #include "uvm_perf_module.h"
@@ -41,9 +41,6 @@
 #include "uvm_range_tree.h"
 #include "uvm_mmu.h"
 #include "nv-kthread-q.h"
-
-#include <linux/mmu_notifier.h>
-#include <linux/wait.h>
 
 // VA blocks are the leaf nodes in the uvm_va_space tree for managed allocations
 // (VA ranges with type == UVM_VA_RANGE_TYPE_MANAGED):
@@ -397,7 +394,7 @@ struct uvm_va_block_struct
             // don't take a reference on the pid so we shouldn't ever use it
             // for task-lookup in the kernel. We only use it as a heuristic so
             // it's OK if the pid gets destroyed or reused.
-            pid_t             first_pid;
+            int               first_pid;
 
             // Index of the page whose faults are being tracked
             uvm_page_index_t  page_index;
@@ -549,12 +546,12 @@ struct uvm_va_block_retry_struct
     // the same size. However it can contain chunks from multiple GPUs. All
     // remaining free chunks are freed when the operation is finished with
     // uvm_va_block_retry_deinit().
-    struct list_head free_chunks;
+    struct list free_chunks;
 
     // List of chunks allocated and used during the block operation. This list
     // can contain chunks from multiple GPUs. All the used chunks are unpinned
     // when the operation is finished with uvm_va_block_retry_deinit().
-    struct list_head used_chunks;
+    struct list used_chunks;
 };
 
 // Module load/exit
@@ -1369,9 +1366,6 @@ static bool uvm_va_block_contains_address(uvm_va_block_t *block, NvU64 address)
 // block. If uvm_enable_builtin_tests is unset, NULL will be returned.
 static uvm_va_block_test_t *uvm_va_block_get_test(uvm_va_block_t *va_block)
 {
-    if (uvm_enable_builtin_tests)
-        return &container_of(va_block, uvm_va_block_wrapper_t, block)->test;
-
     return NULL;
 }
 
@@ -1824,38 +1818,6 @@ static bool uvm_page_mask_intersects(const uvm_page_mask_t *mask1, const uvm_pag
     return bitmap_intersects(mask1->bitmap, mask2->bitmap, PAGES_PER_UVM_VA_BLOCK);
 }
 
-// Print the given page mask on the given buffer using hex symbols. The
-// minimum required size of the buffer is UVM_PAGE_MASK_PRINT_MIN_BUFFER_SIZE.
-static void uvm_page_mask_print(const uvm_page_mask_t *mask, char *buffer)
-{
-    // There are two cases, which depend on PAGE_SIZE
-    if (PAGES_PER_UVM_VA_BLOCK > 32) {
-        NvLength current_long_idx = UVM_PAGE_MASK_WORDS - 1;
-        const char *buffer_end = buffer + UVM_PAGE_MASK_PRINT_MIN_BUFFER_SIZE;
-
-        UVM_ASSERT(sizeof(*mask->bitmap) == 8);
-
-        // For 4KB pages, we need to iterate over multiple words
-        do {
-            NvU64 current_long = mask->bitmap[current_long_idx];
-
-            buffer += sprintf(buffer, "%016llx", current_long);
-            if (current_long_idx != 0)
-                buffer += sprintf(buffer, ":");
-        } while (current_long_idx-- != 0);
-
-        UVM_ASSERT(buffer <= buffer_end);
-    }
-    else {
-        NvU32 value = (unsigned)*mask->bitmap;
-
-        UVM_ASSERT(PAGES_PER_UVM_VA_BLOCK == 32);
-
-        // For 64KB pages, a single print suffices
-        sprintf(buffer, "%08x", value);
-    }
-}
-
 static uvm_va_block_region_t uvm_va_block_first_subregion_in_mask(uvm_va_block_region_t region,
                                                                   const uvm_page_mask_t *page_mask)
 {
@@ -1985,7 +1947,7 @@ static NvU64 uvm_reverse_map_end(const uvm_reverse_map_t *reverse_map)
 // Return the first vma intersecting the region [start, va_block->end]
 // or NULL if no such vma exists. Also returns the region covered by
 // the vma within the va_block.
-struct vm_area_struct *uvm_va_block_find_vma_region(uvm_va_block_t *va_block,
+vmap uvm_va_block_find_vma_region(uvm_va_block_t *va_block,
                                                     struct mm_struct *mm,
                                                     NvU64 start,
                                                     uvm_va_block_region_t *region);
@@ -2054,7 +2016,7 @@ uvm_cpu_chunk_t *uvm_cpu_chunk_get_chunk_for_page(uvm_va_block_t *va_block,
 
 // Return the CPU chunk at the given page_index from the va_block.
 // Locking: The va_block lock must be held.
-struct page *uvm_cpu_chunk_get_cpu_page(uvm_va_block_t *va_block,
+NvU64 uvm_cpu_chunk_get_cpu_page(uvm_va_block_t *va_block,
                                         uvm_page_index_t page_index);
 
 // Physically map a CPU chunk so it is DMA'able from all registered GPUs.

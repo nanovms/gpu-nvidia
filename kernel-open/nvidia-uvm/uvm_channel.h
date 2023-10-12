@@ -183,7 +183,7 @@ struct uvm_gpfifo_entry_struct
     // UVM_GPFIFO_ENTRY_TYPE_NORMAL.
 
     // List node used by the pushbuffer tracking
-    struct list_head pending_list_node;
+    struct list pending_list_node;
 
     // Push info for the pending push that used this GPFIFO entry
     uvm_push_info_t *push_info;
@@ -286,7 +286,7 @@ struct uvm_channel_struct
     // entry is not available if it has been assigned to a push
     // (uvm_push_begin), and the GPFIFO entry associated with the push has not
     // been marked as completed.
-    struct list_head available_push_infos;
+    struct list available_push_infos;
 
     // GPU tracking semaphore tracking the work in the channel.
     // Each push on the channel increments the semaphore, see
@@ -398,7 +398,7 @@ struct uvm_channel_struct
     // to collect the timestamps of asynchronous operations.
     struct
     {
-        struct list_head channel_list_node;
+        struct list channel_list_node;
         NvU32 pending_event_count;
     } tools;
 };

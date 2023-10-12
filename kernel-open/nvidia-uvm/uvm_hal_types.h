@@ -440,7 +440,7 @@ struct uvm_fault_buffer_entry_struct
 
     // List of duplicate fault buffer entries that have been merged into this
     // one
-    struct list_head        merged_instances_list;
+    struct list             merged_instances_list;
 
     // Access types to this page for all accesses that have been coalesced at
     // fetch time. It must include, at least, fault_access_type

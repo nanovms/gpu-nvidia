@@ -24,7 +24,7 @@
 #define  __NO_VERSION__
 
 #include "os-interface.h"
-#include "nv-linux.h"
+#include "nv-nanos.h"
 
 #if defined(CONFIG_CRAY_XT)
 enum {

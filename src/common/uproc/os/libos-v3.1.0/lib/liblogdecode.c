@@ -27,7 +27,6 @@
 #ifdef NVRM
 
 #    include <core/core.h>
-#    include <stddef.h> // size_t
 
 #    define printf(fmt, ...) portDbgExPrintfLevel(LEVEL_ERROR, fmt, ##__VA_ARGS__)
 #    define snprintf         nvDbgSnprintf
@@ -69,8 +68,6 @@ int logPrintf(const char *, ...); // Forward declaration. TODO: allow libos code
 #    endif
 
 #endif // NVRM
-
-#include <stddef.h>
 
 #include "nvtypes.h"
 #include "liblogdecode.h"

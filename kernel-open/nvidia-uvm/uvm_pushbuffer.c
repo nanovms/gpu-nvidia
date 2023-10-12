@@ -31,47 +31,14 @@
 #include "uvm_kvmalloc.h"
 #include "uvm_gpu.h"
 #include "uvm_common.h"
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_conf_computing.h"
-
-// Print pushbuffer state into a seq_file if provided or with UVM_DBG_PRINT() if not.
-static void uvm_pushbuffer_print_common(uvm_pushbuffer_t *pushbuffer, struct seq_file *s);
-
-static int nv_procfs_read_pushbuffer_info(struct seq_file *s, void *v)
-{
-    uvm_pushbuffer_t *pushbuffer = (uvm_pushbuffer_t *)s->private;
-
-    if (!uvm_down_read_trylock(&g_uvm_global.pm.lock))
-            return -EAGAIN;
-
-    uvm_pushbuffer_print_common(pushbuffer, s);
-
-    uvm_up_read(&g_uvm_global.pm.lock);
-
-    return 0;
-}
-
-static int nv_procfs_read_pushbuffer_info_entry(struct seq_file *s, void *v)
-{
-    UVM_ENTRY_RET(nv_procfs_read_pushbuffer_info(s, v));
-}
-
-UVM_DEFINE_SINGLE_PROCFS_FILE(pushbuffer_info_entry);
 
 static NV_STATUS create_procfs(uvm_pushbuffer_t *pushbuffer)
 {
-    uvm_gpu_t *gpu = pushbuffer->channel_manager->gpu;
-
     // The pushbuffer info file is for debug only
     if (!uvm_procfs_is_debug_enabled())
         return NV_OK;
-
-    pushbuffer->procfs.info_file = NV_CREATE_PROC_FILE("pushbuffer",
-                                                       gpu->procfs.dir,
-                                                       pushbuffer_info_entry,
-                                                       pushbuffer);
-    if (pushbuffer->procfs.info_file == NULL)
-        return NV_ERR_OPERATING_SYSTEM;
 
     return NV_OK;
 }
@@ -428,8 +395,6 @@ void uvm_pushbuffer_destroy(uvm_pushbuffer_t *pushbuffer)
     if (pushbuffer == NULL)
         return;
 
-    proc_remove(pushbuffer->procfs.info_file);
-
     uvm_rm_mem_free(pushbuffer->memory_unprotected_sysmem);
     uvm_kvfree(pushbuffer->memory_protected_sysmem);
     uvm_rm_mem_free(pushbuffer->memory);
@@ -646,33 +611,8 @@ bool uvm_pushbuffer_has_space(uvm_pushbuffer_t *pushbuffer)
     return has_space;
 }
 
-void uvm_pushbuffer_print_common(uvm_pushbuffer_t *pushbuffer, struct seq_file *s)
-{
-    NvU32 i;
-
-    UVM_SEQ_OR_DBG_PRINT(s, "Pushbuffer for GPU %s\n", uvm_gpu_name(pushbuffer->channel_manager->gpu));
-    UVM_SEQ_OR_DBG_PRINT(s, " has space: %d\n", uvm_pushbuffer_has_space(pushbuffer));
-
-    uvm_spin_lock(&pushbuffer->lock);
-
-    for (i = 0; i < UVM_PUSHBUFFER_CHUNKS; ++i) {
-        uvm_pushbuffer_chunk_t *chunk = &pushbuffer->chunks[i];
-        NvU32 cpu_put = chunk_get_cpu_put(pushbuffer, chunk);
-        NvU32 gpu_get = chunk_get_gpu_get(pushbuffer, chunk);
-        UVM_SEQ_OR_DBG_PRINT(s, " chunk %u put %u get %u next %u available %d idle %d\n",
-                i,
-                cpu_put, gpu_get, chunk->next_push_start,
-                test_bit(i, pushbuffer->available_chunks) ? 1 : 0,
-                test_bit(i, pushbuffer->idle_chunks) ? 1 : 0);
-
-    }
-
-    uvm_spin_unlock(&pushbuffer->lock);
-}
-
 void uvm_pushbuffer_print(uvm_pushbuffer_t *pushbuffer)
 {
-    return uvm_pushbuffer_print_common(pushbuffer, NULL);
 }
 
 NvU64 uvm_pushbuffer_get_gpu_va_base(uvm_pushbuffer_t *pushbuffer)

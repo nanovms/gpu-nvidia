@@ -25,15 +25,6 @@
 #ifndef _NV_STDARG_H_
 #define _NV_STDARG_H_
 
-#if defined(NV_KERNEL_INTERFACE_LAYER) && defined(NV_LINUX)
-  #include "conftest.h"
-  #if defined(NV_LINUX_STDARG_H_PRESENT)
-    #include <linux/stdarg.h>
-  #else
-    #include <stdarg.h>
-  #endif   
-#else
-  #include <stdarg.h>
-#endif   
+#include "nvport/inline/util_valist.h"
 
 #endif // _NV_STDARG_H_

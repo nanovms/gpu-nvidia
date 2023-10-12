@@ -7,12 +7,6 @@
 #ifndef SPDM_RETURN_STATUS_H
 #define SPDM_RETURN_STATUS_H
 
-#ifndef LIBSPDM_STDINT_ALT
-#include <stdint.h>
-#else
-#include LIBSPDM_STDINT_ALT
-#endif
-
 /* The layout of libspdm_return_t is
  * [31:28] - Severity
  * [27:24] - Reserved

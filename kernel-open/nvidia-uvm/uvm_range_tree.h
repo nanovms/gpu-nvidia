@@ -24,7 +24,7 @@
 #ifndef __UVM_RANGE_TREE_H__
 #define __UVM_RANGE_TREE_H__
 
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "nvstatus.h"
 
 // Tree-based data structure for looking up and iterating over objects with
@@ -32,15 +32,21 @@
 //
 // All locking is up to the caller.
 
+declare_closure_struct(0, 2, int, uvm_range_compare,
+                 rbnode, a, rbnode, b);
+declare_closure_struct(0, 1, boolean, uvm_range_print,
+                 rbnode, n);
 typedef struct uvm_range_tree_struct
 {
     // Tree of uvm_range_tree_node_t's sorted by start.
-    struct rb_root rb_root;
+    struct rbtree rb_root;
+    closure_struct(uvm_range_compare, compare);
+    closure_struct(uvm_range_print, print);
 
     // List of uvm_range_tree_node_t's sorted by start. This is an optimization
     // to avoid calling rb_next and rb_prev frequently, particularly while
     // iterating.
-    struct list_head head;
+    struct list head;
 } uvm_range_tree_t;
 
 typedef struct uvm_range_tree_node_struct
@@ -49,8 +55,8 @@ typedef struct uvm_range_tree_node_struct
     // end is inclusive
     NvU64 end;
 
-    struct rb_node rb_node;
-    struct list_head list;
+    struct rbnode rb_node;
+    struct list list;
 } uvm_range_tree_node_t;
 
 

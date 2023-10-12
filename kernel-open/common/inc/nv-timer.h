@@ -23,44 +23,17 @@
 #ifndef __NV_TIMER_H__
 #define __NV_TIMER_H__
 
-#include <linux/timer.h>
-#include <linux/kernel.h> // For container_of
-
 #include "conftest.h"
 
+declare_closure_struct(0, 0, void, nv_timer_handler);
 struct nv_timer
 {
-    struct timer_list kernel_timer;
+    struct timer kernel_timer;
+    closure_struct(nv_timer_handler, h);
     void (*nv_timer_callback)(struct nv_timer *nv_timer);
 };
 
-static inline void nv_timer_callback_typed_data(struct timer_list *timer)
-{
-    struct nv_timer *nv_timer =
-        container_of(timer, struct nv_timer, kernel_timer);
-
-    nv_timer->nv_timer_callback(nv_timer);
-}
-
-static inline void nv_timer_callback_anon_data(unsigned long arg)
-{
-    struct nv_timer *nv_timer = (struct nv_timer *)arg;
-
-    nv_timer->nv_timer_callback(nv_timer);
-}
-
-static inline void nv_timer_setup(struct nv_timer *nv_timer,
-                                  void (*callback)(struct nv_timer *nv_timer))
-{
-    nv_timer->nv_timer_callback = callback;
-
-#if defined(NV_TIMER_SETUP_PRESENT)
-    timer_setup(&nv_timer->kernel_timer, nv_timer_callback_typed_data, 0);
-#else
-    init_timer(&nv_timer->kernel_timer);
-    nv_timer->kernel_timer.function = nv_timer_callback_anon_data;
-    nv_timer->kernel_timer.data = (unsigned long)nv_timer;
-#endif
-}
+void nv_timer_setup(struct nv_timer *nv_timer,
+                    void (*callback)(struct nv_timer *nv_timer));
 
 #endif // __NV_TIMER_H__

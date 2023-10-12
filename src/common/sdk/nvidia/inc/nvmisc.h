@@ -33,6 +33,10 @@ extern "C" {
 
 #include "nvtypes.h"
 
+#ifndef NULL
+#define NULL    0
+#endif
+
 #if !defined(NVIDIA_UNDEF_LEGACY_BIT_MACROS)
 //
 // Miscellaneous macros useful for bit field manipulations

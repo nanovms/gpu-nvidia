@@ -61,9 +61,9 @@ static inline const char *nv_firmware_chip_family_to_string(
 
         case NV_FIRMWARE_CHIP_FAMILY_END:  // fall through
         case NV_FIRMWARE_CHIP_FAMILY_NULL:
-            return NULL;
+            return (char *)0;
     }
-    return NULL;
+    return (char *)0;
 }
 
 // The includer (presumably nv.c) may optionally define

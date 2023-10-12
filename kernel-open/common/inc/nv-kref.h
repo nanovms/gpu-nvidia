@@ -24,8 +24,6 @@
 #ifndef __NV_KREF_H__
 #define __NV_KREF_H__
 
-#include <asm/atomic.h>
-
 typedef struct nv_kref
 {
     atomic_t refcount;

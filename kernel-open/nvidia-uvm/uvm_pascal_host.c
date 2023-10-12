@@ -21,7 +21,7 @@
 
 *******************************************************************************/
 
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_hal_types.h"
 #include "uvm_hal.h"
 #include "uvm_push.h"

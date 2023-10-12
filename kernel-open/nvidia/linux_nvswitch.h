@@ -25,7 +25,7 @@
 #define LINUX_NVSWITCH_H
 
 #include "nvmisc.h"
-#include "nv-linux.h"
+#include "nv-nanos.h"
 #include "nv-kthread-q.h"
 #include "export_nvswitch.h"
 
@@ -50,7 +50,7 @@
 
 typedef struct
 {
-    struct list_head entry;
+    struct list entry;
     struct i2c_adapter *adapter;
 } nvswitch_i2c_adapter_entry;
 
@@ -63,15 +63,13 @@ typedef struct
     NvUuid uuid;
     struct mutex device_mutex;
     nvswitch_device *lib_device;                  /* nvswitch library device */
-    wait_queue_head_t wait_q_errors;
     void *bar0;
     struct nv_kthread_q task_q;                   /* Background task queue */
     struct nv_kthread_q_item task_item;           /* Background dispatch task */
     atomic_t task_q_ready;
-    wait_queue_head_t wait_q_shutdown;
     struct pci_dev *pci_dev;
     atomic_t ref_count;
-    struct list_head list_node;
+    struct list list_node;
     NvBool unusable;
     NvU32 phys_id;
     NvU64 bios_ver;
@@ -79,7 +77,7 @@ typedef struct
     struct proc_dir_entry *procfs_dir;
 #endif
     NvU8 irq_mechanism;
-    struct list_head i2c_adapter_list;
+    struct list i2c_adapter_list;
 } NVSWITCH_DEV;
 
 

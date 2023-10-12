@@ -32,7 +32,7 @@
 #include "uvm_push.h"
 #include "uvm_range_allocator.h"
 #include "uvm_hal.h"
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 
 static uvm_range_allocator_t g_free_ranges;
 static bool g_mem_initialized;
@@ -274,17 +274,6 @@ NV_STATUS uvm_mem_translate_gpu_attributes(const UvmGpuMappingAttributes *attrs,
     return NV_OK;
 }
 
-static struct page *uvm_virt_to_page(const void *addr)
-{
-    if (virt_addr_valid(addr))
-        return virt_to_page(addr);
-
-    if (is_vmalloc_addr(addr))
-        return vmalloc_to_page(addr);
-
-    return NULL;
-}
-
 uvm_chunk_sizes_mask_t uvm_mem_kernel_chunk_sizes(uvm_gpu_t *gpu)
 {
     // Get the mmu mode hal directly as the internal address space tree has not
@@ -395,6 +384,7 @@ end:
 
 static void mem_free_sysmem_chunks(uvm_mem_t *mem)
 {
+    heap h = (heap)heap_physical(get_kernel_heaps());
     size_t i;
 
     UVM_ASSERT(uvm_mem_is_sysmem(mem));
@@ -405,7 +395,7 @@ static void mem_free_sysmem_chunks(uvm_mem_t *mem)
     for (i = 0; i < mem->chunks_count; ++i) {
         if (!mem->sysmem.pages[i])
             break;
-        __free_pages(mem->sysmem.pages[i], get_order(mem->chunk_size));
+        deallocate(h, mem->sysmem.pages[i], mem->chunk_size);
     }
 
     uvm_kvfree(mem->sysmem.pages);
@@ -436,21 +426,6 @@ static NV_STATUS mem_alloc_dma_addrs(uvm_mem_t *mem, const uvm_gpu_t *gpu)
     return NV_OK;
 }
 
-static gfp_t sysmem_allocation_gfp_flags(int order, bool zero)
-{
-    gfp_t gfp_flags = NV_UVM_GFP_FLAGS;
-
-    if (zero)
-        gfp_flags |= __GFP_ZERO;
-
-    // High-order page allocations require the __GFP_COMP flag to work with
-    // vm_insert_page.
-    if (order > 0)
-        gfp_flags |= __GFP_COMP;
-
-    return gfp_flags;
-}
-
 // This allocation is a non-protected memory allocation under Confidential
 // Computing.
 //
@@ -460,7 +435,7 @@ static gfp_t sysmem_allocation_gfp_flags(int order, bool zero)
 //
 // In case of failure, the caller is required to handle cleanup by calling
 // uvm_mem_free
-static NV_STATUS mem_alloc_sysmem_dma_chunks(uvm_mem_t *mem, gfp_t gfp_flags)
+static NV_STATUS mem_alloc_sysmem_dma_chunks(uvm_mem_t *mem)
 {
     size_t i;
     NV_STATUS status;
@@ -483,11 +458,11 @@ static NV_STATUS mem_alloc_sysmem_dma_chunks(uvm_mem_t *mem, gfp_t gfp_flags)
     dma_addrs = mem->sysmem.dma_addrs[uvm_global_id_gpu_index(mem->dma_owner->global_id)];
 
     for (i = 0; i < mem->chunks_count; ++i) {
-        mem->sysmem.va[i] = uvm_gpu_dma_alloc_page(mem->dma_owner->parent, gfp_flags, &dma_addrs[i]);
+        mem->sysmem.va[i] = uvm_gpu_dma_alloc_page(mem->dma_owner->parent, &dma_addrs[i]);
         if (!mem->sysmem.va[i])
             goto err_no_mem;
 
-        mem->sysmem.pages[i] = uvm_virt_to_page(mem->sysmem.va[i]);
+        mem->sysmem.pages[i] = physical_from_virtual(mem->sysmem.va[i]);
         if (!mem->sysmem.pages[i])
             goto err_no_mem;
     }
@@ -505,10 +480,10 @@ error:
 
 // In case of failure, the caller is required to handle cleanup by calling
 // uvm_mem_free
-static NV_STATUS mem_alloc_sysmem_chunks(uvm_mem_t *mem, gfp_t gfp_flags)
+static NV_STATUS mem_alloc_sysmem_chunks(uvm_mem_t *mem)
 {
+    heap h = (heap)heap_physical(get_kernel_heaps());
     size_t i;
-    int order;
 
     UVM_ASSERT(uvm_mem_is_sysmem(mem) && !uvm_mem_is_sysmem_dma(mem));
 
@@ -516,11 +491,12 @@ static NV_STATUS mem_alloc_sysmem_chunks(uvm_mem_t *mem, gfp_t gfp_flags)
     if (!mem->sysmem.pages)
         return NV_ERR_NO_MEMORY;
 
-    order = get_order(mem->chunk_size);
     for (i = 0; i < mem->chunks_count; ++i) {
-        mem->sysmem.pages[i] = alloc_pages(gfp_flags, order);
-        if (!mem->sysmem.pages[i])
+        mem->sysmem.pages[i] = allocate_u64(h, mem->chunk_size);
+        if (mem->sysmem.pages[i] == INVALID_PHYSICAL) {
+            mem->sysmem.pages[i] = 0;
             return NV_ERR_NO_MEMORY;
+        }
     }
 
     return NV_OK;
@@ -577,20 +553,16 @@ static NV_STATUS mem_alloc_vidmem_chunks(uvm_mem_t *mem, bool zero, bool is_unpr
 static NV_STATUS mem_alloc_chunks(uvm_mem_t *mem, struct mm_struct *mm, bool zero, bool is_unprotected)
 {
     if (uvm_mem_is_sysmem(mem)) {
-        gfp_t gfp_flags;
         uvm_memcg_context_t memcg_context;
         NV_STATUS status;
 
         UVM_ASSERT(PAGE_ALIGNED(mem->chunk_size));
-        gfp_flags = sysmem_allocation_gfp_flags(get_order(mem->chunk_size), zero);
-        if (UVM_CGROUP_ACCOUNTING_SUPPORTED() && mm)
-            gfp_flags |= NV_UVM_GFP_FLAGS_ACCOUNT;
 
-        uvm_memcg_context_start(&memcg_context, mm);
+        uvm_memcg_context_start(&memcg_context);
         if (uvm_mem_is_sysmem_dma(mem))
-            status = mem_alloc_sysmem_dma_chunks(mem, gfp_flags);
+            status = mem_alloc_sysmem_dma_chunks(mem);
         else
-            status = mem_alloc_sysmem_chunks(mem, gfp_flags);
+            status = mem_alloc_sysmem_chunks(mem);
 
         uvm_memcg_context_end(&memcg_context);
         return status;
@@ -709,21 +681,22 @@ static NvU64 reserved_gpu_va(uvm_mem_t *mem, uvm_gpu_t *gpu)
     return gpu->parent->uvm_mem_va_base + mem->kernel.range_alloc.aligned_start;
 }
 
-static struct page *mem_cpu_page(uvm_mem_t *mem, NvU64 offset)
+static NvU64 mem_cpu_page(uvm_mem_t *mem, NvU64 offset)
 {
-    struct page *base_page = mem->sysmem.pages[offset / mem->chunk_size];
+    NvU64 base_page = mem->sysmem.pages[offset / mem->chunk_size];
 
     UVM_ASSERT_MSG(PAGE_ALIGNED(offset), "offset 0x%llx\n", offset);
 
     offset = offset % mem->chunk_size;
-    return pfn_to_page(page_to_pfn(base_page) + offset / PAGE_SIZE);
+    return (base_page + offset);
 }
 
 static NV_STATUS mem_map_cpu_to_sysmem_kernel(uvm_mem_t *mem)
 {
-    struct page **pages = mem->sysmem.pages;
+    NvU64 *pages = mem->sysmem.pages;
     size_t num_pages = uvm_mem_physical_size(mem) / PAGE_SIZE;
-    pgprot_t prot = PAGE_KERNEL;
+    pageflags prot = pageflags_writable(pageflags_memory());
+    heap h = (heap)heap_virtual_page(get_kernel_heaps());
 
     UVM_ASSERT(uvm_mem_is_sysmem(mem));
 
@@ -738,10 +711,12 @@ static NV_STATUS mem_map_cpu_to_sysmem_kernel(uvm_mem_t *mem)
             pages[page_index] = mem_cpu_page(mem, page_index * PAGE_SIZE);
     }
 
-    if (g_uvm_global.conf_computing_enabled && uvm_mem_is_sysmem_dma(mem))
-        prot = uvm_pgprot_decrypted(PAGE_KERNEL_NOENC);
-
-    mem->kernel.cpu_addr = vmap(pages, num_pages, VM_MAP, prot);
+    mem->kernel.cpu_addr = allocate(h, num_pages * PAGE_SIZE);
+    if (mem->kernel.cpu_addr != INVALID_ADDRESS)
+        for (int p = 0; p < num_pages; p++)
+            map(u64_from_pointer(mem->kernel.cpu_addr) + p * PAGE_SIZE, pages[p], PAGE_SIZE, prot);
+    else
+        mem->kernel.cpu_addr = 0;
 
     if (mem->chunk_size != PAGE_SIZE)
         uvm_kvfree(pages);
@@ -754,9 +729,11 @@ static NV_STATUS mem_map_cpu_to_sysmem_kernel(uvm_mem_t *mem)
 
 static NV_STATUS mem_map_cpu_to_vidmem_kernel(uvm_mem_t *mem)
 {
-    struct page **pages;
+    NvU64 *pages;
     size_t num_chunk_pages = mem->chunk_size / PAGE_SIZE;
     size_t num_pages = uvm_mem_physical_size(mem) / PAGE_SIZE;
+    pageflags prot = pageflags_writable(pageflags_memory());
+    heap h = (heap)heap_virtual_page(get_kernel_heaps());
     size_t page_index;
     size_t chunk_index;
 
@@ -770,15 +747,20 @@ static NV_STATUS mem_map_cpu_to_vidmem_kernel(uvm_mem_t *mem)
 
     for (chunk_index = 0; chunk_index < mem->chunks_count; ++chunk_index) {
         uvm_gpu_chunk_t *chunk = mem->vidmem.chunks[chunk_index];
-        struct page *page = uvm_gpu_chunk_to_page(&mem->backing_gpu->pmm, chunk);
+        NvU64 page = uvm_gpu_chunk_to_page(&mem->backing_gpu->pmm, chunk);
         size_t chunk_page_index;
 
         for (chunk_page_index = 0; chunk_page_index < num_chunk_pages; ++chunk_page_index)
-            pages[page_index++] = page + chunk_page_index;
+            pages[page_index++] = page + chunk_page_index * PAGE_SIZE;
     }
     UVM_ASSERT(page_index == num_pages);
 
-    mem->kernel.cpu_addr = vmap(pages, num_pages, VM_MAP, PAGE_KERNEL);
+    mem->kernel.cpu_addr = allocate(h, num_pages * PAGE_SIZE);
+    if (mem->kernel.cpu_addr != INVALID_ADDRESS)
+        for (int p = 0; p < num_pages; p++)
+            map(u64_from_pointer(mem->kernel.cpu_addr) + p * PAGE_SIZE, pages[p], PAGE_SIZE, prot);
+    else
+        mem->kernel.cpu_addr = 0;
 
     uvm_kvfree(pages);
 
@@ -790,41 +772,32 @@ static NV_STATUS mem_map_cpu_to_vidmem_kernel(uvm_mem_t *mem)
 
 void uvm_mem_unmap_cpu_kernel(uvm_mem_t *mem)
 {
+    heap h;
+
     if (!uvm_mem_mapped_on_cpu_kernel(mem))
         return;
 
-    vunmap(mem->kernel.cpu_addr);
+    unmap(u64_from_pointer(mem->kernel.cpu_addr), uvm_mem_physical_size(mem));
+    h = (heap)heap_virtual_page(get_kernel_heaps());
+    deallocate(h, mem->kernel.cpu_addr, uvm_mem_physical_size(mem));
     mem->kernel.cpu_addr = NULL;
     mem_clear_mapped_on_cpu_kernel(mem);
 }
 
-static NV_STATUS mem_map_cpu_to_sysmem_user(uvm_mem_t *mem, struct vm_area_struct *vma)
+static NV_STATUS mem_map_cpu_to_sysmem_user(uvm_mem_t *mem)
 {
-    NV_STATUS status;
     NvU64 offset;
+    pageflags prot;
 
     UVM_ASSERT(mem->user != NULL);
     UVM_ASSERT(uvm_mem_is_sysmem(mem));
-    uvm_assert_mmap_lock_locked(vma->vm_mm);
 
-    // TODO: Bug 1995015: high-order page allocations need to be allocated as
-    // compound pages in order to be able to use vm_insert_page on them. This
-    // is not currently being exercised because the only allocations using this
-    // are semaphore pools (which typically use a single page).
+    prot = pageflags_user(pageflags_writable(pageflags_memory()));
     for (offset = 0; offset < uvm_mem_physical_size(mem); offset += PAGE_SIZE) {
-        int ret = vm_insert_page(vma, (unsigned long)mem->user->addr + offset, mem_cpu_page(mem, offset));
-        if (ret) {
-            UVM_ASSERT_MSG(ret == -ENOMEM, "ret: %d\n", ret);
-            status = errno_to_nv_status(ret);
-            goto error;
-        }
+        map((unsigned long)mem->user->addr + offset, mem_cpu_page(mem, offset), PAGE_SIZE, prot);
     }
 
     return NV_OK;
-
-error:
-    unmap_mapping_range(mem->user->va_space->mapping, (size_t)mem->user->addr, uvm_mem_physical_size(mem), 1);
-    return status;
 }
 
 void uvm_mem_unmap_cpu_user(uvm_mem_t *mem)
@@ -832,15 +805,14 @@ void uvm_mem_unmap_cpu_user(uvm_mem_t *mem)
     if (!uvm_mem_mapped_on_cpu_user(mem))
         return;
 
-    unmap_mapping_range(mem->user->va_space->mapping, (size_t)mem->user->addr, uvm_mem_physical_size(mem), 1);
+    unmap(u64_from_pointer(mem->user->addr), uvm_mem_physical_size(mem));
     mem_clear_mapped_on_cpu_user(mem);
     mem_deinit_user_mapping(mem);
 }
 
-NV_STATUS uvm_mem_map_cpu_user(uvm_mem_t *mem, uvm_va_space_t *user_va_space, struct vm_area_struct *vma)
+NV_STATUS uvm_mem_map_cpu_user(uvm_mem_t *mem, uvm_va_space_t *user_va_space, void *user_addr)
 {
     NV_STATUS status;
-    void *user_addr;
 
     UVM_ASSERT(mem);
     UVM_ASSERT(mem_can_be_mapped_on_cpu_user(mem));
@@ -848,15 +820,11 @@ NV_STATUS uvm_mem_map_cpu_user(uvm_mem_t *mem, uvm_va_space_t *user_va_space, st
     if (uvm_mem_mapped_on_cpu_user(mem))
         return NV_OK;
 
-    UVM_ASSERT((vma->vm_end - vma->vm_start) == mem->size);
-
-    user_addr = (void *) (uintptr_t)vma->vm_start;
-
     status = mem_init_user_mapping(mem, user_va_space, user_addr);
     if (status != NV_OK)
         return status;
 
-    status = mem_map_cpu_to_sysmem_user(mem, vma);
+    status = mem_map_cpu_to_sysmem_user(mem);
     if (status != NV_OK)
         goto cleanup;
 

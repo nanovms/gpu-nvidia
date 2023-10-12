@@ -82,7 +82,6 @@ NV_STATUS uvm_global_init(void)
     UVM_ASSERT(uvm_thread_context_global_initialized());
 
     uvm_mutex_init(&g_uvm_global.global_lock, UVM_LOCK_ORDER_GLOBAL);
-    uvm_init_rwsem(&g_uvm_global.pm.lock, UVM_LOCK_ORDER_GLOBAL_PM);
     uvm_spin_lock_irqsave_init(&g_uvm_global.gpu_table_lock, UVM_LOCK_ORDER_LEAF);
     uvm_mutex_init(&g_uvm_global.va_spaces.lock, UVM_LOCK_ORDER_VA_SPACES_LIST);
     INIT_LIST_HEAD(&g_uvm_global.va_spaces.list);
@@ -102,12 +101,6 @@ NV_STATUS uvm_global_init(void)
     status = errno_to_nv_status(nv_kthread_q_init(&g_uvm_global.deferred_release_q, "UVM deferred release queue"));
     if (status != NV_OK) {
         UVM_DBG_PRINT("nv_kthread_q_init() failed: %s\n", nvstatusToString(status));
-        goto error;
-    }
-
-    status = uvm_procfs_init();
-    if (status != NV_OK) {
-        UVM_ERR_PRINT("uvm_procfs_init() failed: %s\n", nvstatusToString(status));
         goto error;
     }
 
@@ -227,8 +220,6 @@ void uvm_global_exit(void)
     if (g_uvm_global.rm_session_handle != 0)
         uvm_rm_locked_call_void(nvUvmInterfaceSessionDestroy(g_uvm_global.rm_session_handle));
 
-    uvm_procfs_exit();
-
     nv_kthread_q_stop(&g_uvm_global.deferred_release_q);
     nv_kthread_q_stop(&g_uvm_global.global_q);
 
@@ -277,10 +268,6 @@ static NV_STATUS uvm_suspend(void)
     // by uvm_resume().  This is contrary to the lock tracking code's
     // expectations, so lock tracking is disabled.
     uvm_thread_context_lock_disable_tracking();
-
-    // Take the global power management lock in write mode to lock out
-    // most user-facing entry points.
-    uvm_down_write(&g_uvm_global.pm.lock);
 
     nv_kthread_q_flush(&g_uvm_global.global_q);
 
@@ -373,8 +360,6 @@ static NV_STATUS uvm_resume(void)
         // have been set to be suppressed.
         uvm_gpu_access_counters_set_ignore(gpu, false);
     }
-
-    uvm_up_write(&g_uvm_global.pm.lock);
 
     uvm_thread_context_lock_enable_tracking();
 

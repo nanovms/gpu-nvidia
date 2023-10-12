@@ -26,9 +26,6 @@
 
 #include "nvtypes.h"
 #include "nvstatus.h"
-#include <linux/rbtree.h>
-#include <linux/list.h>
-#include <linux/string.h>
 #include "nv-list-helpers.h"
 
 // UVM RB trees are an implementation of Red-Black trees, which include some
@@ -42,19 +39,22 @@ typedef struct
 {
     NvU64 key;
 
-    struct rb_node rb_node;
-    struct list_head list;
+    struct rbnode rb_node;
+    struct list list;
 } uvm_rb_tree_node_t;
 
+declare_closure_struct(0, 2, int, uvm_rbt_compare,
+                 rbnode, a, rbnode, b);
 typedef struct
 {
     // Tree of uvm_rb_tree_node_t's sorted by key.
-    struct rb_root rb_root;
+    struct rbtree rb_root;
+    closure_struct(uvm_rbt_compare, compare);
 
     // List of uvm_rb_tree_node_t's sorted by key. This is an optimization
     // to avoid calling rb_next and rb_prev frequently, particularly while
     // iterating.
-    struct list_head head;
+    struct list head;
 
 } uvm_rb_tree_t;
 

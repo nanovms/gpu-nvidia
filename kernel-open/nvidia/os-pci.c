@@ -24,7 +24,7 @@
 #define  __NO_VERSION__
 
 #include "os-interface.h"
-#include "nv-linux.h"
+#include "nv-nanos.h"
 
 void* NV_API_CALL os_pci_init_handle(
     NvU32 domain,
@@ -35,20 +35,7 @@ void* NV_API_CALL os_pci_init_handle(
     NvU16 *device
 )
 {
-    struct pci_dev *dev;
-    unsigned int devfn = PCI_DEVFN(slot, function);
-
-    if (!NV_MAY_SLEEP())
-        return NULL;
-
-    dev = NV_GET_DOMAIN_BUS_AND_SLOT(domain, bus, devfn);
-    if (dev != NULL)
-    {
-        if (vendor) *vendor = dev->vendor;
-        if (device) *device = dev->device;
-        pci_dev_put(dev); /* TODO: Fix me! (hotplug) */
-    }
-    return (void *) dev;
+    return NULL;
 }
 
 NV_STATUS NV_API_CALL os_pci_read_byte(
@@ -62,7 +49,7 @@ NV_STATUS NV_API_CALL os_pci_read_byte(
         *pReturnValue = 0xff;
         return NV_ERR_NOT_SUPPORTED;
     }
-    pci_read_config_byte( (struct pci_dev *) handle, offset, pReturnValue);
+    *pReturnValue = pci_cfgread( (struct pci_dev *) handle, offset, 1);
     return NV_OK;
 }
 
@@ -77,7 +64,7 @@ NV_STATUS NV_API_CALL os_pci_read_word(
         *pReturnValue = 0xffff;
         return NV_ERR_NOT_SUPPORTED;
     }
-    pci_read_config_word( (struct pci_dev *) handle, offset, pReturnValue);
+    *pReturnValue = pci_cfgread( (struct pci_dev *) handle, offset, 2);
     return NV_OK;
 }
 
@@ -92,7 +79,7 @@ NV_STATUS NV_API_CALL os_pci_read_dword(
         *pReturnValue = 0xffffffff;
         return NV_ERR_NOT_SUPPORTED;
     }
-    pci_read_config_dword( (struct pci_dev *) handle, offset, pReturnValue);
+    *pReturnValue = pci_cfgread( (struct pci_dev *) handle, offset, 4);
     return NV_OK;
 }
 
@@ -105,7 +92,7 @@ NV_STATUS NV_API_CALL os_pci_write_byte(
     if (offset >= NV_PCIE_CFG_MAX_OFFSET)
         return NV_ERR_NOT_SUPPORTED;
 
-    pci_write_config_byte( (struct pci_dev *) handle, offset, value);
+    pci_cfgwrite( (struct pci_dev *) handle, offset, 1, value);
     return NV_OK;
 }
 
@@ -118,7 +105,7 @@ NV_STATUS NV_API_CALL os_pci_write_word(
     if (offset >= NV_PCIE_CFG_MAX_OFFSET)
         return NV_ERR_NOT_SUPPORTED;
 
-    pci_write_config_word( (struct pci_dev *) handle, offset, value);
+    pci_cfgwrite( (struct pci_dev *) handle, offset, 2, value);
     return NV_OK;
 }
 
@@ -131,7 +118,7 @@ NV_STATUS NV_API_CALL os_pci_write_dword(
     if (offset >= NV_PCIE_CFG_MAX_OFFSET)
         return NV_ERR_NOT_SUPPORTED;
 
-    pci_write_config_dword( (struct pci_dev *) handle, offset, value);
+    pci_cfgwrite( (struct pci_dev *) handle, offset, 4, value);
     return NV_OK;
 }
 
@@ -156,6 +143,43 @@ void NV_API_CALL os_pci_remove(
             __FUNCTION__);
     os_dbg_breakpoint();
 #endif
+}
+
+void* NV_API_CALL os_pci_alloc_handle(
+    NvU32 domain,
+    NvU8  bus,
+    NvU8  slot,
+    NvU8  function,
+    NvU16 *vendor,
+    NvU16 *device
+)
+{
+    struct pci_dev d = {
+        .bus = bus,
+        .slot = slot,
+        .function = function,
+    };
+    pci_dev dev;
+    u16 vnd = pci_get_vendor(&d);
+
+    if (vnd == 0xffff)
+        return NULL;
+    NV_KMALLOC(dev, sizeof(*dev));
+    if (!dev)
+        return NULL;
+    *dev = d;
+    if (vendor)
+        *vendor = vnd;
+    if (device)
+        *device = pci_get_device(&d);
+    return (void *) dev;
+}
+
+void NV_API_CALL os_pci_dealloc_handle(
+    void *handle
+)
+{
+    NV_KFREE(handle, sizeof(struct pci_dev));
 }
 
 NV_STATUS NV_API_CALL

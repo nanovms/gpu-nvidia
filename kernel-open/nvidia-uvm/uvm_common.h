@@ -40,7 +40,7 @@
 #endif
 
 #include "uvm_types.h"
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 
 enum {
     NVIDIA_UVM_PRIMARY_MINOR_NUMBER = 0,
@@ -59,7 +59,7 @@ int format_uuid_to_buffer(char *buffer, unsigned bufferLength, const NvProcessor
          kbasename(__FILE__),                         \
          __LINE__,                                    \
          __FUNCTION__,                                \
-         current->pid,                                \
+         current->tid,                                \
          ##__VA_ARGS__)
 
 #define UVM_PRINT_FUNC(func, fmt, ...)  \
@@ -119,7 +119,7 @@ bool uvm_debug_prints_enabled(void);
         UVM_ERR_PRINT("ERROR: %s : " msg "\n", uuidBuffer, ##__VA_ARGS__); \
     } while (0)
 
-#define UVM_PANIC()             UVM_PRINT_FUNC(panic, "\n")
+#define UVM_PANIC()             UVM_PRINT_FUNC(halt, "\n")
 #define UVM_PANIC_MSG(fmt, ...) UVM_PRINT_FUNC(panic, ": " fmt, ##__VA_ARGS__)
 
 #define UVM_PANIC_ON_MSG(cond, fmt, ...)        \
@@ -196,7 +196,7 @@ extern bool uvm_release_asserts_set_global_error_for_tests;
             if (uvm_release_asserts_set_global_error || uvm_release_asserts_set_global_error_for_tests) \
                 uvm_global_set_fatal_error(NV_ERR_INVALID_STATE);                                       \
             if (uvm_release_asserts_dump_stack)                                                         \
-                dump_stack();                                                                           \
+                os_dump_stack();                                                                           \
             on_uvm_assert();                                                                            \
         }                                                                                               \
     } while (0)
@@ -271,7 +271,7 @@ static int debug_mode(void)
 #endif
 }
 
-static inline void kmem_cache_destroy_safe(struct kmem_cache **ppCache)
+static inline void kmem_cache_destroy_safe(heap *ppCache)
 {
     if (ppCache)
     {
@@ -316,7 +316,7 @@ static NvU64 uvm_spin_loop_elapsed(const uvm_spin_loop_t *spin)
                       uvm_spin_loop_elapsed(__spin) / (1000*1000*1000));                \
                                                                                         \
         if (uvm_debug_prints_enabled())                                                 \
-            dump_stack();                                                               \
+            os_dump_stack();                                                            \
     }                                                                                   \
     __status;                                                                           \
 })
@@ -338,12 +338,6 @@ unsigned uvm_get_stale_thread_id(void);
 NvBool uvm_user_id_security_check(uid_t euidTarget);
 
 extern int uvm_enable_builtin_tests;
-
-static inline void uvm_init_character_device(struct cdev *cdev, const struct file_operations *fops)
-{
-    cdev_init(cdev, fops);
-    cdev->owner = THIS_MODULE;
-}
 
 typedef struct
 {
@@ -388,29 +382,23 @@ typedef enum
 
 // Returns whether the input file was opened against the UVM character device
 // file. A NULL input returns false.
-bool uvm_file_is_nvidia_uvm(struct file *filp);
+bool uvm_file_is_nvidia_uvm(fdesc filp);
 
 // Returns the type of data filp->private_data contains to and if ptr_val !=
 // NULL returns the value of the pointer.
-uvm_fd_type_t uvm_fd_type(struct file *filp, void **ptr_val);
+uvm_fd_type_t uvm_fd_type(fdesc filp, void **ptr_val);
 
 // Returns the pointer stored in filp->private_data if the type
 // matches, otherwise returns NULL.
-void *uvm_fd_get_type(struct file *filp, uvm_fd_type_t type);
+void *uvm_fd_get_type(fdesc filp, uvm_fd_type_t type);
 
 // Reads the first word in the supplied struct page.
-static inline void uvm_touch_page(struct page *page)
+static inline void uvm_touch_page(u64 pa)
 {
     char *mapping;
 
-    UVM_ASSERT(page);
-
-    mapping = (char *) kmap(page);
+    mapping = (char *) virt_from_linear_backed_phys(pa);
     (void)UVM_READ_ONCE(*mapping);
-    kunmap(page);
 }
-
-// Return true if the VMA is one used by UVM managed allocations.
-bool uvm_vma_is_managed(struct vm_area_struct *vma);
 
 #endif /* _UVM_COMMON_H */

@@ -26,23 +26,19 @@
 #include "uvm_ats.h"
 #include "uvm_ats_faults.h"
 #include "uvm_migrate_pageable.h"
-#include <linux/nodemask.h>
-#include <linux/mempolicy.h>
-#include <linux/mmu_notifier.h>
 
 #if UVM_ATS_PREFETCH_SUPPORTED()
 #include <linux/hmm.h>
 #endif
 
 static NV_STATUS service_ats_faults(uvm_gpu_va_space_t *gpu_va_space,
-                                    struct vm_area_struct *vma,
+                                    vmap vma,
                                     NvU64 start,
                                     size_t length,
                                     uvm_fault_access_type_t access_type,
                                     uvm_ats_fault_context_t *ats_context)
 {
     uvm_va_space_t *va_space = gpu_va_space->va_space;
-    struct mm_struct *mm = va_space->va_space_mm.mm;
     bool write = (access_type >= UVM_FAULT_ACCESS_TYPE_WRITE);
     NV_STATUS status;
     NvU64 user_space_start;
@@ -78,7 +74,6 @@ static NV_STATUS service_ats_faults(uvm_gpu_va_space_t *gpu_va_space,
     uvm_migrate_args_t uvm_migrate_args =
     {
         .va_space                       = va_space,
-        .mm                             = mm,
         .dst_id                         = ats_context->residency_id,
         .dst_node_id                    = ats_context->residency_node,
         .start                          = start,
@@ -91,7 +86,7 @@ static NV_STATUS service_ats_faults(uvm_gpu_va_space_t *gpu_va_space,
         .user_space_length              = &user_space_length,
     };
 
-    UVM_ASSERT(uvm_ats_can_service_faults(gpu_va_space, mm));
+    UVM_ASSERT(uvm_ats_can_service_faults(gpu_va_space));
 
     // We are trying to use migrate_vma API in the kernel (if it exists) to
     // populate and map the faulting region on the GPU. We want to do this only
@@ -128,7 +123,7 @@ static void flush_tlb_write_faults(uvm_gpu_va_space_t *gpu_va_space,
 }
 
 static void ats_batch_select_residency(uvm_gpu_va_space_t *gpu_va_space,
-                                       struct vm_area_struct *vma,
+                                       vmap vma,
                                        uvm_ats_fault_context_t *ats_context)
 {
     uvm_gpu_t *gpu = gpu_va_space->gpu;
@@ -194,10 +189,10 @@ done:
     ats_context->residency_node = residency;
 }
 
-static void get_range_in_vma(struct vm_area_struct *vma, NvU64 base, NvU64 *start, NvU64 *end)
+static void get_range_in_vma(vmap vma, NvU64 base, NvU64 *start, NvU64 *end)
 {
-    *start = max(vma->vm_start, (unsigned long) base);
-    *end = min(vma->vm_end, (unsigned long) (base + UVM_VA_BLOCK_SIZE));
+    *start = max(vma->node.r.start, (unsigned long) base);
+    *end = min(vma->node.r.end, (unsigned long) (base + UVM_VA_BLOCK_SIZE));
 }
 
 static uvm_page_index_t uvm_ats_cpu_page_index(NvU64 base, NvU64 addr)
@@ -223,7 +218,7 @@ static uvm_va_block_region_t uvm_ats_region_from_start_end(NvU64 start, NvU64 en
     return uvm_va_block_region(uvm_ats_cpu_page_index(base, start), uvm_ats_cpu_page_index(base, end));
 }
 
-static uvm_va_block_region_t uvm_ats_region_from_vma(struct vm_area_struct *vma, NvU64 base)
+static uvm_va_block_region_t uvm_ats_region_from_vma(vmap vma, NvU64 base)
 {
     NvU64 start;
     NvU64 end;
@@ -266,7 +261,7 @@ static const struct mmu_interval_notifier_ops uvm_ats_notifier_ops =
 #endif
 
 static NV_STATUS ats_compute_residency_mask(uvm_gpu_va_space_t *gpu_va_space,
-                                            struct vm_area_struct *vma,
+                                            vmap vma,
                                             NvU64 base,
                                             uvm_ats_fault_context_t *ats_context)
 {
@@ -363,7 +358,7 @@ static NV_STATUS ats_compute_residency_mask(uvm_gpu_va_space_t *gpu_va_space,
 }
 
 static void ats_expand_fault_region(uvm_gpu_va_space_t *gpu_va_space,
-                                    struct vm_area_struct *vma,
+                                    vmap vma,
                                     uvm_ats_fault_context_t *ats_context,
                                     uvm_va_block_region_t max_prefetch_region,
                                     uvm_page_mask_t *faulted_mask)
@@ -387,12 +382,12 @@ static void ats_expand_fault_region(uvm_gpu_va_space_t *gpu_va_space,
 
     uvm_page_mask_or(read_fault_mask, read_fault_mask, prefetch_mask);
 
-    if (vma->vm_flags & VM_WRITE)
+    if (vma->flags & VMAP_FLAG_WRITABLE)
         uvm_page_mask_or(write_fault_mask, write_fault_mask, prefetch_mask);
 }
 
 static NV_STATUS ats_fault_prefetch(uvm_gpu_va_space_t *gpu_va_space,
-                                    struct vm_area_struct *vma,
+                                    vmap vma,
                                     NvU64 base,
                                     uvm_ats_fault_context_t *ats_context)
 {
@@ -422,7 +417,7 @@ static NV_STATUS ats_fault_prefetch(uvm_gpu_va_space_t *gpu_va_space,
         uvm_page_mask_init_from_region(prefetch_mask, max_prefetch_region, NULL);
         uvm_page_mask_or(read_fault_mask, read_fault_mask, prefetch_mask);
 
-        if (vma->vm_flags & VM_WRITE)
+        if (vma->flags & VMAP_FLAG_WRITABLE)
             uvm_page_mask_or(write_fault_mask, write_fault_mask, prefetch_mask);
 
         return status;
@@ -434,7 +429,7 @@ static NV_STATUS ats_fault_prefetch(uvm_gpu_va_space_t *gpu_va_space,
 }
 
 NV_STATUS uvm_ats_service_faults(uvm_gpu_va_space_t *gpu_va_space,
-                                 struct vm_area_struct *vma,
+                                 vmap vma,
                                  NvU64 base,
                                  uvm_ats_fault_context_t *ats_context)
 {
@@ -457,10 +452,10 @@ NV_STATUS uvm_ats_service_faults(uvm_gpu_va_space_t *gpu_va_space,
     uvm_page_mask_zero(faults_serviced_mask);
     uvm_page_mask_zero(reads_serviced_mask);
 
-    if (!(vma->vm_flags & VM_READ))
+    if (!(vma->flags & VMAP_FLAG_READABLE))
         return status;
 
-    if (!(vma->vm_flags & VM_WRITE)) {
+    if (!(vma->flags & VMAP_FLAG_WRITABLE)) {
         // If VMA doesn't have write permissions, all write faults are fatal.
         // Try servicing such faults for read iff they are also present in
         // read_fault_mask. This is because for replayable faults, if there are
@@ -484,18 +479,18 @@ NV_STATUS uvm_ats_service_faults(uvm_gpu_va_space_t *gpu_va_space,
     for_each_va_block_subregion_in_mask(subregion, write_fault_mask, region) {
         NvU64 start = base + (subregion.first * PAGE_SIZE);
         size_t length = uvm_va_block_region_num_pages(subregion) * PAGE_SIZE;
-        uvm_fault_access_type_t access_type = (vma->vm_flags & VM_WRITE) ?
+        uvm_fault_access_type_t access_type = (vma->flags & VMAP_FLAG_WRITABLE) ?
                                                                           UVM_FAULT_ACCESS_TYPE_WRITE :
                                                                           UVM_FAULT_ACCESS_TYPE_READ;
 
-        UVM_ASSERT(start >= vma->vm_start);
-        UVM_ASSERT((start + length) <= vma->vm_end);
+        UVM_ASSERT(start >= vma->node.r.start);
+        UVM_ASSERT((start + length) <= vma->node.r.end);
 
         status = service_ats_faults(gpu_va_space, vma, start, length, access_type, ats_context);
         if (status != NV_OK)
             return status;
 
-        if (vma->vm_flags & VM_WRITE) {
+        if (vma->flags & VMAP_FLAG_WRITABLE) {
             uvm_page_mask_region_fill(faults_serviced_mask, subregion);
 
             // The Linux kernel never invalidates TLB entries on mapping
@@ -522,8 +517,8 @@ NV_STATUS uvm_ats_service_faults(uvm_gpu_va_space_t *gpu_va_space,
         size_t length = uvm_va_block_region_num_pages(subregion) * PAGE_SIZE;
         uvm_fault_access_type_t access_type = UVM_FAULT_ACCESS_TYPE_READ;
 
-        UVM_ASSERT(start >= vma->vm_start);
-        UVM_ASSERT((start + length) <= vma->vm_end);
+        UVM_ASSERT(start >= vma->node.r.start);
+        UVM_ASSERT((start + length) <= vma->node.r.end);
 
         status = service_ats_faults(gpu_va_space, vma, start, length, access_type, ats_context);
         if (status != NV_OK)

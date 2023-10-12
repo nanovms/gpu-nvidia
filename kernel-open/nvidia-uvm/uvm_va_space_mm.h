@@ -24,13 +24,11 @@
 #ifndef __UVM_VA_SPACE_MM_H__
 #define __UVM_VA_SPACE_MM_H__
 
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_forward_decl.h"
 #include "uvm_lock.h"
 #include "uvm_test_ioctl.h"
 #include "nv-kref.h"
-
-#include <linux/mmu_notifier.h>
 
 #if defined(NV_LINUX_SCHED_MM_H_PRESENT)
 #include <linux/sched/mm.h>
@@ -59,15 +57,6 @@ typedef enum
 
 struct uvm_va_space_mm_struct
 {
-  // The mm currently associated with this VA space. Most callers shouldn't
-  // access this directly, but should instead use uvm_va_space_mm_retain()/
-  // uvm_va_space_mm_release().
-  //
-  // The pointer itself is valid when the va_space_mm state is
-  // UVM_VA_SPACE_MM_STATE_ALIVE, but should only be considered usable
-  // when retained or current.
-  struct mm_struct *mm;
-
 #if UVM_CAN_USE_MMU_NOTIFIERS()
     struct mmu_notifier mmu_notifier;
 #endif
@@ -79,10 +68,6 @@ struct uvm_va_space_mm_struct
 
     // Refcount for uvm_va_space_mm_retain()/uvm_va_space_mm_release()
     NvU32 retained_count;
-
-    // Wait queue for threads waiting for retainers to finish (retained_count
-    // going to 0 when not alive).
-    wait_queue_head_t last_retainer_wait_queue;
 };
 
 static bool uvm_va_space_mm_alive(struct uvm_va_space_mm_struct *va_space_mm)
@@ -201,13 +186,6 @@ static void uvm_va_space_mm_or_current_release_unlock(uvm_va_space_t *va_space, 
         uvm_va_space_mm_or_current_release(va_space, mm);
     }
 }
-
-#if !defined(NV_MMGET_NOT_ZERO_PRESENT)
-static bool mmget_not_zero(struct mm_struct *mm)
-{
-    return atomic_inc_not_zero(&mm->mm_users);
-}
-#endif
 
 #if UVM_CAN_USE_MMU_NOTIFIERS()
 static void uvm_mmput(struct mm_struct *mm)

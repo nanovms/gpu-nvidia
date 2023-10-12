@@ -24,7 +24,7 @@
 #define  __NO_VERSION__
 
 #include "os-interface.h"
-#include "nv-linux.h"
+#include "nv-nanos.h"
 
 #if defined(CONFIG_PROC_FS)
 
@@ -1397,7 +1397,7 @@ void nv_procfs_exit(void)
 #endif
 }
 
-int nv_procfs_add_gpu(nv_linux_state_t *nvl)
+int nv_procfs_add_gpu(nv_nanos_state_t *nvl)
 {
 #if defined(CONFIG_PROC_FS)
     nv_state_t *nv;
@@ -1470,7 +1470,7 @@ failed:
 #endif
 }
 
-void nv_procfs_remove_gpu(nv_linux_state_t *nvl)
+void nv_procfs_remove_gpu(nv_nanos_state_t *nvl)
 {
 #if defined(CONFIG_PROC_FS)
     proc_remove(nvl->proc_dir);

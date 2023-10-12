@@ -34,7 +34,7 @@
 #elif defined(NV_KERNEL_INTERFACE_LAYER) && defined(NV_LINUX)
   #include <linux/stddef.h> // NULL
 #else
-  #include <stddef.h>       // NULL
+  #include <nvport/nvport.h>
 #endif
 
 #include <nvstatus.h>
@@ -827,6 +827,7 @@ NV_STATUS  NV_API_CALL  nv_pci_trigger_recovery  (nv_state_t *);
 NvBool     NV_API_CALL  nv_requires_dma_remap    (nv_state_t *);
 
 NvBool     NV_API_CALL  nv_is_rm_firmware_active(nv_state_t *);
+void       NV_API_CALL  nv_fetch_firmware(nv_firmware_type_t, nv_firmware_chip_family_t);
 const void*NV_API_CALL  nv_get_firmware(nv_state_t *, nv_firmware_type_t, nv_firmware_chip_family_t, const void **, NvU32 *);
 void       NV_API_CALL  nv_put_firmware(const void *);
 

@@ -30,24 +30,35 @@
 #include "uvm_gpu.h"
 #include "uvm_va_space_mm.h"
 
+closure_function(3, 1, void, uvm_valid_range_handler,
+                 u64, start, u64, end, boolean *, ok,
+                 vmap, m)
+{
+    if (bound(start) == bound(end))
+        return;
+    if (m->node.r.start > bound(start)) {
+        *bound(ok) = false;
+        return;
+    }
+    if (bound(end) <= m->node.r.end) {
+        *bound(ok) = true;
+        bound(start) = bound(end);
+    } else {
+        bound(start) = m->node.r.end;
+    }
+}
+
 static bool uvm_is_valid_vma_range(struct mm_struct *mm, NvU64 start, NvU64 length)
 {
     const NvU64 end = start + length;
-    struct vm_area_struct *vma;
+    boolean ok = false;
 
     UVM_ASSERT(mm);
     uvm_assert_mmap_lock_locked(mm);
 
-    vma = find_vma_intersection(mm, start, end);
+    vmap_iterator(current->p, stack_closure(uvm_valid_range_handler, start, end, &ok));
 
-    while (vma && (vma->vm_start <= start)) {
-        if (vma->vm_end >= end)
-            return true;
-        start = vma->vm_end;
-        vma = find_vma_intersection(mm, start, end);
-    }
-
-    return false;
+    return ok;
 }
 
 uvm_api_range_type_t uvm_api_range_type_check(uvm_va_space_t *va_space, struct mm_struct *mm, NvU64 base, NvU64 length)
@@ -285,7 +296,7 @@ static NV_STATUS preferred_location_set(uvm_va_space_t *va_space,
     return uvm_hmm_set_preferred_location(va_space, preferred_location, base, last_address, out_tracker);
 }
 
-NV_STATUS uvm_api_set_preferred_location(const UVM_SET_PREFERRED_LOCATION_PARAMS *params, struct file *filp)
+NV_STATUS uvm_api_set_preferred_location(const UVM_SET_PREFERRED_LOCATION_PARAMS *params, fdesc filp)
 {
     NV_STATUS status = NV_OK;
     NV_STATUS tracker_status;
@@ -293,7 +304,6 @@ NV_STATUS uvm_api_set_preferred_location(const UVM_SET_PREFERRED_LOCATION_PARAMS
     uvm_va_space_t *va_space = uvm_va_space_get(filp);
     uvm_va_range_t *va_range = NULL;
     uvm_va_range_t *first_va_range_to_migrate = NULL;
-    struct mm_struct *mm;
     uvm_processor_id_t preferred_location_id;
     bool has_va_space_write_lock;
     const NvU64 start = params->requestedBase;
@@ -303,11 +313,10 @@ NV_STATUS uvm_api_set_preferred_location(const UVM_SET_PREFERRED_LOCATION_PARAMS
 
     UVM_ASSERT(va_space);
 
-    mm = uvm_va_space_mm_or_current_retain_lock(va_space);
     uvm_va_space_down_write(va_space);
     has_va_space_write_lock = true;
 
-    type = uvm_api_range_type_check(va_space, mm, start, length);
+    type = uvm_api_range_type_check(va_space, NULL, start, length);
     if (type == UVM_API_RANGE_TYPE_INVALID) {
         status = NV_ERR_INVALID_ADDRESS;
         goto done;
@@ -335,17 +344,6 @@ NV_STATUS uvm_api_set_preferred_location(const UVM_SET_PREFERRED_LOCATION_PARAMS
 
     UVM_ASSERT(status == NV_OK);
 
-    // UvmSetPreferredLocation on non-ATS regions targets the VA range of the
-    // associated file descriptor, not the calling process. Since
-    // UvmSetPreferredLocation on ATS regions are handled in userspace,
-    // implementing the non-ATS behavior is not possible. So, return an error
-    // instead. Although the out of process case can be supported for HMM,
-    // return an error to make the API behavior consistent for all SAM regions.
-    if ((type != UVM_API_RANGE_TYPE_MANAGED) && (current->mm != mm)) {
-        status = NV_ERR_NOT_SUPPORTED;
-        goto done;
-    }
-
     // For ATS regions, let userspace handle it.
     if (type == UVM_API_RANGE_TYPE_ATS) {
         UVM_ASSERT(g_uvm_global.ats.enabled);
@@ -353,7 +351,7 @@ NV_STATUS uvm_api_set_preferred_location(const UVM_SET_PREFERRED_LOCATION_PARAMS
         goto done;
     }
 
-    status = preferred_location_set(va_space, mm, start, length, preferred_location_id, &first_va_range_to_migrate, &local_tracker);
+    status = preferred_location_set(va_space, NULL, start, length, preferred_location_id, &first_va_range_to_migrate, &local_tracker);
     if (status != NV_OK)
         goto done;
 
@@ -387,33 +385,24 @@ done:
     else
         uvm_va_space_up_read(va_space);
 
-    uvm_va_space_mm_or_current_release_unlock(va_space, mm);
-
     return status == NV_OK ? tracker_status : status;
 }
 
-NV_STATUS uvm_api_unset_preferred_location(const UVM_UNSET_PREFERRED_LOCATION_PARAMS *params, struct file *filp)
+NV_STATUS uvm_api_unset_preferred_location(const UVM_UNSET_PREFERRED_LOCATION_PARAMS *params, fdesc filp)
 {
     NV_STATUS status;
     NV_STATUS tracker_status;
     uvm_va_space_t *va_space = uvm_va_space_get(filp);
-    struct mm_struct *mm;
     uvm_tracker_t local_tracker = UVM_TRACKER_INIT();
     uvm_api_range_type_t type;
 
     UVM_ASSERT(va_space);
 
-    mm = uvm_va_space_mm_or_current_retain_lock(va_space);
     uvm_va_space_down_write(va_space);
 
-    type = uvm_api_range_type_check(va_space, mm, params->requestedBase, params->length);
+    type = uvm_api_range_type_check(va_space, NULL, params->requestedBase, params->length);
     if (type == UVM_API_RANGE_TYPE_INVALID) {
         status = NV_ERR_INVALID_ADDRESS;
-        goto done;
-    }
-
-    if ((type != UVM_API_RANGE_TYPE_MANAGED) && (current->mm != mm)) {
-        status = NV_ERR_NOT_SUPPORTED;
         goto done;
     }
 
@@ -423,7 +412,7 @@ NV_STATUS uvm_api_unset_preferred_location(const UVM_UNSET_PREFERRED_LOCATION_PA
     }
 
     status = preferred_location_set(va_space,
-                                    mm,
+                                    NULL,
                                     params->requestedBase,
                                     params->length,
                                     UVM_ID_INVALID,
@@ -434,7 +423,6 @@ done:
     tracker_status = uvm_tracker_wait_deinit(&local_tracker);
 
     uvm_va_space_up_write(va_space);
-    uvm_va_space_mm_or_current_release_unlock(va_space, mm);
     return status == NV_OK ? tracker_status : status;
 }
 
@@ -516,7 +504,6 @@ static NV_STATUS accessed_by_set(uvm_va_space_t *va_space,
                                  bool set_bit)
 {
     uvm_processor_id_t processor_id = UVM_ID_INVALID;
-    struct mm_struct *mm;
     const NvU64 last_address = base + length - 1;
     accessed_by_split_params_t split_params;
     uvm_tracker_t local_tracker = UVM_TRACKER_INIT();
@@ -526,10 +513,9 @@ static NV_STATUS accessed_by_set(uvm_va_space_t *va_space,
 
     UVM_ASSERT(va_space);
 
-    mm = uvm_va_space_mm_or_current_retain_lock(va_space);
     uvm_va_space_down_write(va_space);
 
-    type = uvm_api_range_type_check(va_space, mm, base, length);
+    type = uvm_api_range_type_check(va_space, NULL, base, length);
     if (type == UVM_API_RANGE_TYPE_INVALID) {
         status = NV_ERR_INVALID_ADDRESS;
         goto done;
@@ -581,7 +567,7 @@ static NV_STATUS accessed_by_set(uvm_va_space_t *va_space,
                                                    processor_id) == set_bit);
 
             if (set_bit) {
-                status = uvm_va_range_set_accessed_by(va_range, processor_id, mm, &local_tracker);
+                status = uvm_va_range_set_accessed_by(va_range, processor_id, NULL, &local_tracker);
                 if (status != NV_OK)
                     goto done;
             }
@@ -595,7 +581,6 @@ static NV_STATUS accessed_by_set(uvm_va_space_t *va_space,
     }
     else {
         // NULL mm case already filtered by uvm_api_range_type_check()
-        UVM_ASSERT(mm);
         UVM_ASSERT(type == UVM_API_RANGE_TYPE_HMM);
         status = uvm_hmm_set_accessed_by(va_space,
                                          processor_id,
@@ -609,19 +594,18 @@ done:
     tracker_status = uvm_tracker_wait_deinit(&local_tracker);
 
     uvm_va_space_up_write(va_space);
-    uvm_va_space_mm_or_current_release_unlock(va_space, mm);
 
     return status == NV_OK ? tracker_status : status;
 }
 
-NV_STATUS uvm_api_set_accessed_by(const UVM_SET_ACCESSED_BY_PARAMS *params, struct file *filp)
+NV_STATUS uvm_api_set_accessed_by(const UVM_SET_ACCESSED_BY_PARAMS *params, fdesc filp)
 {
     uvm_va_space_t *va_space = uvm_va_space_get(filp);
 
     return accessed_by_set(va_space, params->requestedBase, params->length, &params->accessedByUuid, true);
 }
 
-NV_STATUS uvm_api_unset_accessed_by(const UVM_UNSET_ACCESSED_BY_PARAMS *params, struct file *filp)
+NV_STATUS uvm_api_unset_accessed_by(const UVM_UNSET_ACCESSED_BY_PARAMS *params, fdesc filp)
 {
     uvm_va_space_t *va_space = uvm_va_space_get(filp);
 
@@ -792,7 +776,6 @@ static bool read_duplication_is_split_needed(const uvm_va_policy_t *policy, void
 
 static NV_STATUS read_duplication_set(uvm_va_space_t *va_space, NvU64 base, NvU64 length, bool enable)
 {
-    struct mm_struct *mm;
     const NvU64 last_address = base + length - 1;
     NV_STATUS status;
     uvm_read_duplication_policy_t new_policy;
@@ -801,10 +784,9 @@ static NV_STATUS read_duplication_set(uvm_va_space_t *va_space, NvU64 base, NvU6
     UVM_ASSERT(va_space);
 
     // We need mmap_lock as we may create CPU mappings
-    mm = uvm_va_space_mm_or_current_retain_lock(va_space);
     uvm_va_space_down_write(va_space);
 
-    type = uvm_api_range_type_check(va_space, mm, base, length);
+    type = uvm_api_range_type_check(va_space, NULL, base, length);
     if (type == UVM_API_RANGE_TYPE_INVALID) {
         status = NV_ERR_INVALID_ADDRESS;
         goto done;
@@ -842,14 +824,14 @@ static NV_STATUS read_duplication_set(uvm_va_space_t *va_space, NvU64 base, NvU6
 
                 // Handle SetAccessedBy mappings
                 if (new_policy == UVM_READ_DUPLICATION_ENABLED) {
-                    status = uvm_va_range_set_read_duplication(va_range, mm);
+                    status = uvm_va_range_set_read_duplication(va_range, NULL);
                     if (status != NV_OK)
                         goto done;
                 }
                 else {
                     // If unsetting read duplication fails, the return status is
                     // not propagated back to the caller
-                    (void)uvm_va_range_unset_read_duplication(va_range, mm);
+                    (void)uvm_va_range_unset_read_duplication(va_range, NULL);
                 }
             }
 
@@ -866,18 +848,17 @@ static NV_STATUS read_duplication_set(uvm_va_space_t *va_space, NvU64 base, NvU6
 
 done:
     uvm_va_space_up_write(va_space);
-    uvm_va_space_mm_or_current_release_unlock(va_space, mm);
     return status;
 }
 
-NV_STATUS uvm_api_enable_read_duplication(const UVM_ENABLE_READ_DUPLICATION_PARAMS *params, struct file *filp)
+NV_STATUS uvm_api_enable_read_duplication(const UVM_ENABLE_READ_DUPLICATION_PARAMS *params, fdesc filp)
 {
     uvm_va_space_t *va_space = uvm_va_space_get(filp);
 
     return read_duplication_set(va_space, params->requestedBase, params->length, true);
 }
 
-NV_STATUS uvm_api_disable_read_duplication(const UVM_DISABLE_READ_DUPLICATION_PARAMS *params, struct file *filp)
+NV_STATUS uvm_api_disable_read_duplication(const UVM_DISABLE_READ_DUPLICATION_PARAMS *params, fdesc filp)
 {
     uvm_va_space_t *va_space = uvm_va_space_get(filp);
 
@@ -969,14 +950,14 @@ done:
     return status;
 }
 
-NV_STATUS uvm_api_enable_system_wide_atomics(UVM_ENABLE_SYSTEM_WIDE_ATOMICS_PARAMS *params, struct file *filp)
+NV_STATUS uvm_api_enable_system_wide_atomics(UVM_ENABLE_SYSTEM_WIDE_ATOMICS_PARAMS *params, fdesc filp)
 {
     uvm_va_space_t *va_space = uvm_va_space_get(filp);
 
     return system_wide_atomics_set(va_space, &params->gpu_uuid, true);
 }
 
-NV_STATUS uvm_api_disable_system_wide_atomics(UVM_DISABLE_SYSTEM_WIDE_ATOMICS_PARAMS *params, struct file *filp)
+NV_STATUS uvm_api_disable_system_wide_atomics(UVM_DISABLE_SYSTEM_WIDE_ATOMICS_PARAMS *params, fdesc filp)
 {
     uvm_va_space_t *va_space = uvm_va_space_get(filp);
 

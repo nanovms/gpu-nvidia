@@ -28,7 +28,7 @@
 #include "uvm_forward_decl.h"
 #include "uvm_va_block_types.h"
 #include "uvm_va_policy.h"
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_range_tree.h"
 #include "uvm_lock.h"
 

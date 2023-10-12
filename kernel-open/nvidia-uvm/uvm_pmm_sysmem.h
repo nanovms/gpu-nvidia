@@ -25,7 +25,7 @@
 #define __UVM_PMM_SYSMEM_H__
 
 #include "uvm_common.h"
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_forward_decl.h"
 #include "uvm_lock.h"
 #include "uvm_pmm_gpu.h"
@@ -44,7 +44,7 @@ struct uvm_pmm_sysmem_mappings_struct
 {
     uvm_gpu_t                                      *gpu;
 
-    struct radix_tree_root             reverse_map_tree;
+    table                              reverse_map_tree;
 
     uvm_mutex_t                        reverse_map_lock;
 };
@@ -233,7 +233,7 @@ struct uvm_cpu_chunk_struct
     // any struct page(s) and both physical and logical chunks are
     // reference counted, there is no need to take separate references
     // to the struct page for logical chunks.
-    struct page *page;
+    NvU64 pa;
 };
 
 typedef struct
@@ -328,7 +328,7 @@ NV_STATUS uvm_cpu_chunk_alloc(uvm_chunk_size_t alloc_size,
 // the page. The kernel is also responsible for mapping/unmapping the page on
 // the CPU. We create a CPU chunk for the page primarily to allow GPU mappings
 // for the page to be created.
-NV_STATUS uvm_cpu_chunk_alloc_hmm(struct page *page,
+NV_STATUS uvm_cpu_chunk_alloc_hmm(NvU64 pa,
                                   uvm_cpu_chunk_t **new_chunk);
 
 // Convert a physical chunk to an HMM chunk.

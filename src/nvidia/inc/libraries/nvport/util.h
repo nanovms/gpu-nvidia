@@ -183,7 +183,28 @@ PORT_UTIL_INLINE NvU32 portUtilCountTrailingZeros32(NvU32 n);
 
 /// @} End core functions
 
-#include <stddef.h> /* NULL */
+#ifndef NULL
+#define NULL    0
+#endif
+
+#define false   0
+#define true    1
+
+#define offsetof(__t, __f)    (unsigned long)(&((__t *)0)->__f)
+
+typedef char int8_t;
+typedef short int16_t;
+typedef int int32_t;
+typedef long long int64_t;
+typedef unsigned char uint8_t;
+typedef unsigned short uint16_t;
+typedef unsigned int uint32_t;
+typedef unsigned long long uint64_t;
+typedef unsigned long long uintptr_t;
+typedef unsigned long size_t;
+typedef unsigned char bool;
+
+#define SIZE_MAX    ((size_t)-1)
 
 /**
  * @name Extended Functions

@@ -24,7 +24,7 @@
 #include "uvm_common.h"
 #include "uvm_range_tree.h"
 
-static uvm_range_tree_node_t *get_range_node(struct rb_node *rb_node)
+static uvm_range_tree_node_t *get_range_node(rbnode rb_node)
 {
     return rb_entry(rb_node, uvm_range_tree_node_t, rb_node);
 }
@@ -57,7 +57,7 @@ static uvm_range_tree_node_t *range_node_find(uvm_range_tree_t *tree,
                                               uvm_range_tree_node_t **parent,
                                               uvm_range_tree_node_t **next)
 {
-    struct rb_node *rb_node = tree->rb_root.rb_node;
+    rbnode rb_node = tree->rb_root.root;
     uvm_range_tree_node_t *node = NULL;
     uvm_range_tree_node_t *_parent = NULL;
 
@@ -65,9 +65,9 @@ static uvm_range_tree_node_t *range_node_find(uvm_range_tree_t *tree,
         node = get_range_node(rb_node);
 
         if (addr < node->start)
-            rb_node = rb_node->rb_left;
+            rb_node = rb_node->c[0];
         else if (addr > node->end)
-            rb_node = rb_node->rb_right;
+            rb_node = rb_node->c[1];
         else // node contains addr
             break;
 
@@ -95,10 +95,30 @@ static uvm_range_tree_node_t *range_node_find(uvm_range_tree_t *tree,
     return node;
 }
 
+define_closure_function(0, 2, int, uvm_range_compare,
+                 rbnode, a, rbnode, b)
+{
+    uvm_range_tree_node_t *node_a = struct_from_field(a, uvm_range_tree_node_t *, rb_node);
+    uvm_range_tree_node_t *node_b = struct_from_field(b, uvm_range_tree_node_t *, rb_node);
+    NvU64 start_a = node_a->start;
+    NvU64 start_b = node_b->start;
+
+    return (start_a == start_b) ? 0 : ((start_a < start_b) ? -1 : 1);
+}
+
+define_closure_function(0, 1, boolean, uvm_range_print,
+                 rbnode, n)
+{
+    uvm_range_tree_node_t *node = struct_from_field(n, uvm_range_tree_node_t *, rb_node);
+    rprintf(" [0x%lx 0x%lx]", node->start, node->end);
+    return true;
+}
+
 void uvm_range_tree_init(uvm_range_tree_t *tree)
 {
     memset(tree, 0, sizeof(*tree));
-    tree->rb_root = RB_ROOT;
+    init_rbtree(&tree->rb_root, init_closure(&tree->compare, uvm_range_compare),
+                init_closure(&tree->print, uvm_range_print));
     INIT_LIST_HEAD(&tree->head);
 }
 
@@ -111,6 +131,7 @@ NV_STATUS uvm_range_tree_add(uvm_range_tree_t *tree, uvm_range_tree_node_t *node
     match = range_node_find(tree, node->start, &parent, NULL);
     if (match)
         return NV_ERR_UVM_ADDRESS_IN_USE;
+    init_rbnode(&node->rb_node);
 
     // If no match we know that the new start isn't contained in any existing
     // node, but we still have to check for overlap on the rest of the new range.
@@ -118,8 +139,7 @@ NV_STATUS uvm_range_tree_add(uvm_range_tree_t *tree, uvm_range_tree_node_t *node
     // If there's no parent and we didn't match on the root node, the tree is
     // empty.
     if (!parent) {
-        rb_link_node(&node->rb_node, NULL, &tree->rb_root.rb_node);
-        rb_insert_color(&node->rb_node, &tree->rb_root);
+        rbtree_insert_node(&tree->rb_root, &node->rb_node);
         list_add(&node->list, &tree->head);
         return NV_OK;
     }
@@ -137,7 +157,6 @@ NV_STATUS uvm_range_tree_add(uvm_range_tree_t *tree, uvm_range_tree_node_t *node
         if (prev)
             UVM_ASSERT(!range_nodes_overlap(node, prev));
 
-        rb_link_node(&node->rb_node, &parent->rb_node, &parent->rb_node.rb_left);
         list_add_tail(&node->list, &parent->list);
     }
     else {
@@ -145,11 +164,10 @@ NV_STATUS uvm_range_tree_add(uvm_range_tree_t *tree, uvm_range_tree_node_t *node
         if (next && range_nodes_overlap(node, next))
             return NV_ERR_UVM_ADDRESS_IN_USE;
 
-        rb_link_node(&node->rb_node, &parent->rb_node, &parent->rb_node.rb_right);
         list_add(&node->list, &parent->list);
     }
 
-    rb_insert_color(&node->rb_node, &tree->rb_root);
+    rbtree_insert_node(&tree->rb_root, &node->rb_node);
     return NV_OK;
 }
 

@@ -25,14 +25,9 @@
 
 #include "conftest.h"
 #include "nv-list-helpers.h"
-#include <linux/types.h>
-#include <linux/kernel.h>
-#include <linux/hash.h>
 
 #if defined(NV_LINUX_STRINGHASH_H_PRESENT)
 #include <linux/stringhash.h>       /* full_name_hash() */
-#else
-#include <linux/dcache.h>
 #endif
 
 #if (NV_FULL_NAME_HASH_ARGUMENT_COUNT == 3)
@@ -55,15 +50,15 @@
     (sizeof(val) <= 4 ? hash_32(val, bits) : hash_long(val, bits))
 
 #define NV_DECLARE_HASHTABLE(name, bits) \
-    struct hlist_head name[1 << (bits)]
+    struct list name[1 << (bits)]
 
-static inline void _nv_hash_init(struct hlist_head *ht, unsigned int sz)
+static inline void _nv_hash_init(struct list *ht, unsigned int sz)
 {
     unsigned int i;
 
     for (i = 0; i < sz; i++)
     {
-        INIT_HLIST_HEAD(&ht[i]);
+        list_init(&ht[i]);
     }
 }
 

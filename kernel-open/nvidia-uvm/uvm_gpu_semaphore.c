@@ -43,7 +43,7 @@ struct uvm_gpu_semaphore_pool_struct
     uvm_gpu_t *gpu;
 
     // List of all the semaphore pages belonging to the pool
-    struct list_head pages;
+    struct list pages;
 
     // Pages aperture.
     uvm_aperture_t aperture;
@@ -64,7 +64,7 @@ struct uvm_gpu_semaphore_pool_page_struct
     uvm_gpu_semaphore_pool_t *pool;
 
     // Node in the list of all pages in a semaphore pool
-    struct list_head all_pages_node;
+    struct list all_pages_node;
 
     // Mask indicating free semaphore indices within the page
     DECLARE_BITMAP(free_semaphores, UVM_SEMAPHORE_COUNT_PER_PAGE);

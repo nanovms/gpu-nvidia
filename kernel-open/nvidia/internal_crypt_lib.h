@@ -31,18 +31,12 @@
  */
 #include "conftest.h"
 
-#include <linux/errno.h>
-#include <linux/kernel.h>
-#include <linux/limits.h>
-#include <linux/random.h>
-#include <linux/string.h>
+#include "nv-nanos.h"
 
 // Check if ECDH/ECDSA are there, on some platforms they might not be...
 #ifndef AUTOCONF_INCLUDED
 #if defined(NV_GENERATED_AUTOCONF_H_PRESENT)
 #include <generated/autoconf.h>
-#else
-#include <linux/autoconf.h>
 #endif
 #endif
 #if \

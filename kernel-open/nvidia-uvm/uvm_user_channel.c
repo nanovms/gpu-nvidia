@@ -22,7 +22,7 @@
 *******************************************************************************/
 
 #include "uvm_common.h"
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_va_space.h"
 #include "uvm_va_range.h"
 #include "uvm_lock.h"
@@ -37,25 +37,23 @@
 #include "nv_uvm_interface.h"
 #include "uvm_test.h"
 
-#include <linux/sort.h>
-
 // Sort channel resources from highest to lowest alignments
-static int resource_align_high_cmp(const void *a, const void *b)
+static boolean resource_align_high_cmp(void *a, void *b)
 {
     const UvmGpuChannelResourceInfo *resource_a = a;
     const UvmGpuChannelResourceInfo *resource_b = b;
+    NvU64 align_a = max(resource_a->alignment, resource_a->resourceInfo.pageSize);
+    NvU64 align_b = max(resource_b->alignment, resource_b->resourceInfo.pageSize);
 
-    if (resource_a->alignment > resource_b->alignment)
-        return -1;
-    if (resource_a->alignment < resource_b->alignment)
-        return 1;
-    return 0;
+    return (align_a < align_b);
 }
 
 static NV_STATUS get_rm_channel_resources(uvm_user_channel_t *user_channel, UvmGpuChannelInstanceInfo *channel_info)
 {
     UvmGpuChannelResourceInfo *resources = NULL;
     NvU32 i, num_resources = user_channel->num_resources;
+    void **res_array;
+    boolean success;
 
     // Note that num_resources may be 0, in which case resources will be
     // ZERO_SIZE_PTR. This is preferred to setting resources to NULL, since we
@@ -64,29 +62,37 @@ static NV_STATUS get_rm_channel_resources(uvm_user_channel_t *user_channel, UvmG
     resources = uvm_kvmalloc_zero(num_resources * sizeof(resources[0]));
     if (!resources)
         return NV_ERR_NO_MEMORY;
-
-    memcpy(resources, channel_info->resourceInfo, num_resources * sizeof(resources[0]));
-
-    // Info fix-up
-    for (i = 0; i < num_resources; i++) {
-        UvmGpuMemoryInfo *mem_info = &resources[i].resourceInfo;
-
-        // RM can return alignments of 0, so make sure it's at least page size
-        // before we start using it.
-        resources[i].alignment = max(resources[i].alignment, (NvU64)mem_info->pageSize);
-
-        // RM tracks logical size, so the size might not be a multiple of page
-        // size. This would cause problems in our tracking.
-        mem_info->size = UVM_ALIGN_UP(mem_info->size, mem_info->pageSize);
+    NV_KMALLOC(res_array, num_resources * sizeof(res_array[0]));
+    if (!res_array) {
+        uvm_kvfree(resources);
+        return NV_ERR_NO_MEMORY;
     }
 
-    // Sort the resources from highest to lowest alignment. This should
-    // guarantee that they fit in the provided VA space, regardless of the order
-    // used to calculate the total size.
-    sort(resources, num_resources, sizeof(resources[0]), resource_align_high_cmp, NULL);
+    for (i = 0; i < num_resources; i++)
+        res_array[i] = channel_info->resourceInfo + i;
+    success = sort(res_array, num_resources, resource_align_high_cmp);
+    if (success) {
+        for (i = 0; i < num_resources; i++) {
+            UvmGpuMemoryInfo *mem_info;
 
-    user_channel->resources = resources;
-    return NV_OK;
+            runtime_memcpy(resources + i, res_array[i], sizeof(resources[0]));
+            mem_info = &resources[i].resourceInfo;
+
+            // RM can return alignments of 0, so make sure it's at least page size
+            // before we start using it.
+            resources[i].alignment = max(resources[i].alignment, (NvU64)mem_info->pageSize);
+
+            // RM tracks logical size, so the size might not be a multiple of page
+            // size. This would cause problems in our tracking.
+            mem_info->size = UVM_ALIGN_UP(mem_info->size, mem_info->pageSize);
+        }
+        user_channel->resources = resources;
+    } else {
+        uvm_kvfree(resources);
+    }
+    NV_KFREE(res_array, num_resources * sizeof(res_array[0]));
+
+    return success ? NV_OK : NV_ERR_NO_MEMORY;
 }
 
 static NV_STATUS uvm_user_channel_create(uvm_va_space_t *va_space,
@@ -593,7 +599,6 @@ static NV_STATUS uvm_register_channel(uvm_va_space_t *va_space,
 {
     NV_STATUS status;
     uvm_gpu_t *gpu;
-    struct mm_struct *mm;
     uvm_gpu_va_space_t *gpu_va_space;
     uvm_user_channel_t *user_channel = NULL;
     LIST_HEAD(deferred_free_list);
@@ -616,9 +621,6 @@ static NV_STATUS uvm_register_channel(uvm_va_space_t *va_space,
     uvm_gpu_retain(gpu);
 
     uvm_va_space_up_read_rm(va_space);
-
-    // The mm needs to be locked in order to remove stale HMM va_blocks.
-    mm = uvm_va_space_mm_or_current_retain_lock(va_space);
 
     // We have the RM objects now so we know what the VA range layout should be.
     // Re-take the VA space lock in write mode to create and insert them.
@@ -649,12 +651,11 @@ static NV_STATUS uvm_register_channel(uvm_va_space_t *va_space,
 
     // Performs verification checks and inserts the channel's VA ranges into the
     // VA space, but doesn't map them.
-    status = uvm_register_channel_under_write(mm, user_channel, base, length);
+    status = uvm_register_channel_under_write(NULL, user_channel, base, length);
     if (status != NV_OK)
         goto error_under_write;
 
-    if (mm)
-        uvm_up_read_mmap_lock_out_of_order(mm);
+    uvm_up_read_mmap_lock_out_of_order(NULL);
 
     // The subsequent mappings will need to call into RM, which means we must
     // downgrade the VA space lock to read mode. Although we're in read mode no
@@ -679,7 +680,6 @@ static NV_STATUS uvm_register_channel(uvm_va_space_t *va_space,
         goto error_under_read;
 
     uvm_va_space_up_read_rm(va_space);
-    uvm_va_space_mm_or_current_release(va_space, mm);
     uvm_gpu_release(gpu);
     return NV_OK;
 
@@ -687,7 +687,6 @@ error_under_write:
     if (user_channel->gpu_va_space)
         uvm_user_channel_detach(user_channel, &deferred_free_list);
     uvm_va_space_up_write(va_space);
-    uvm_va_space_mm_or_current_release_unlock(va_space, mm);
     uvm_deferred_free_object_list(&deferred_free_list);
     uvm_gpu_release(gpu);
     return status;
@@ -713,12 +712,10 @@ error_under_read:
     if (user_channel->gpu_va_space) {
         uvm_user_channel_detach(user_channel, &deferred_free_list);
         uvm_va_space_up_write(va_space);
-        uvm_va_space_mm_or_current_release(va_space, mm);
         uvm_deferred_free_object_list(&deferred_free_list);
     }
     else {
         uvm_va_space_up_write(va_space);
-        uvm_va_space_mm_or_current_release(va_space, mm);
     }
 
     uvm_user_channel_release(user_channel);
@@ -726,7 +723,7 @@ error_under_read:
     return status;
 }
 
-NV_STATUS uvm_api_register_channel(UVM_REGISTER_CHANNEL_PARAMS *params, struct file *filp)
+NV_STATUS uvm_api_register_channel(UVM_REGISTER_CHANNEL_PARAMS *params, fdesc filp)
 {
     uvm_va_space_t *va_space = uvm_va_space_get(filp);
     uvm_rm_user_object_t user_rm_channel =
@@ -783,7 +780,7 @@ void uvm_user_channel_stop(uvm_user_channel_t *user_channel)
     atomic_set(&user_channel->is_bound, 0);
 }
 
-void uvm_user_channel_detach(uvm_user_channel_t *user_channel, struct list_head *deferred_free_list)
+void uvm_user_channel_detach(uvm_user_channel_t *user_channel, struct list *deferred_free_list)
 {
     uvm_va_space_t *va_space;
     uvm_gpu_va_space_t *gpu_va_space;
@@ -902,7 +899,7 @@ static NV_STATUS uvm_unregister_channel(uvm_va_space_t *va_space, uvm_rm_user_ob
     return status;
 }
 
-NV_STATUS uvm_api_unregister_channel(UVM_UNREGISTER_CHANNEL_PARAMS *params, struct file *filp)
+NV_STATUS uvm_api_unregister_channel(UVM_UNREGISTER_CHANNEL_PARAMS *params, fdesc filp)
 {
     uvm_va_space_t *va_space = uvm_va_space_get(filp);
     uvm_rm_user_object_t user_rm_channel =
@@ -912,144 +909,4 @@ NV_STATUS uvm_api_unregister_channel(UVM_UNREGISTER_CHANNEL_PARAMS *params, stru
         .user_object   = params->hChannel
     };
     return uvm_unregister_channel(va_space, &user_rm_channel);
-}
-
-static NV_STATUS uvm_test_check_channel_va_space_get_info(uvm_va_space_t *va_space,
-                                                          UVM_TEST_CHECK_CHANNEL_VA_SPACE_PARAMS *params,
-                                                          UvmGpuChannelInstanceInfo *channel_info)
-{
-    uvm_gpu_t *gpu;
-    uvm_gpu_va_space_t *gpu_va_space;
-    void *rm_retained_channel;
-    NV_STATUS status;
-
-    uvm_va_space_down_read_rm(va_space);
-
-    gpu = uvm_va_space_get_gpu_by_uuid_with_gpu_va_space(va_space, &params->gpu_uuid);
-    if (!gpu) {
-        status = NV_ERR_INVALID_DEVICE;
-        goto out;
-    }
-
-    gpu_va_space = uvm_gpu_va_space_get(va_space, gpu);
-    UVM_ASSERT(gpu_va_space);
-
-    // Look up the instance pointer
-    //
-    // TODO: Bug 1624521: This interface needs to use rmCtrlFd to do validation
-    memset(channel_info, 0, sizeof(*channel_info));
-    status = uvm_rm_locked_call(nvUvmInterfaceRetainChannel(gpu_va_space->duped_gpu_va_space,
-                                                            params->client,
-                                                            params->channel,
-                                                            &rm_retained_channel,
-                                                            channel_info));
-    if (status != NV_OK)
-        goto out;
-
-    uvm_rm_locked_call_void(nvUvmInterfaceReleaseChannel(rm_retained_channel));
-
-out:
-    uvm_va_space_up_read_rm(va_space);
-    return status;
-}
-
-NV_STATUS uvm_test_check_channel_va_space(UVM_TEST_CHECK_CHANNEL_VA_SPACE_PARAMS *params, struct file *filp)
-{
-    struct file *va_space_filp = NULL;
-    uvm_va_space_t *va_space = NULL;
-    uvm_va_space_t *channel_va_space;
-    uvm_gpu_t *gpu;
-    uvm_fault_buffer_entry_t fault_entry;
-    UvmGpuChannelInstanceInfo *channel_info;
-    NV_STATUS status;
-
-    memset(&fault_entry, 0, sizeof(fault_entry));
-
-    channel_info = uvm_kvmalloc_zero(sizeof(*channel_info));
-    if (!channel_info) {
-        status = NV_ERR_NO_MEMORY;
-        goto out;
-    }
-
-    // The channel is owned by this file, so we have to query it using this
-    // file's VA space.
-    status = uvm_test_check_channel_va_space_get_info(uvm_va_space_get(filp), params, channel_info);
-    if (status != NV_OK)
-        goto out;
-
-    // We need to do the lookup using the input file's VA space
-    va_space_filp = fget(params->va_space_fd);
-    if (!uvm_file_is_nvidia_uvm(va_space_filp)) {
-        status = NV_ERR_INVALID_ARGUMENT;
-        goto out;
-    }
-
-    va_space = uvm_fd_va_space(va_space_filp);
-    if (!va_space) {
-        status = NV_ERR_INVALID_ARGUMENT;
-        goto out;
-    }
-
-    uvm_va_space_down_read(va_space);
-
-    gpu = uvm_va_space_get_gpu_by_uuid(va_space, &params->gpu_uuid);
-    if (!gpu || !uvm_processor_mask_test(&va_space->faultable_processors, gpu->id)) {
-        status = NV_ERR_INVALID_DEVICE;
-        goto out;
-    }
-
-    if (params->ve_id >= gpu->max_subcontexts) {
-        status = NV_ERR_INVALID_ARGUMENT;
-        goto out;
-    }
-
-    // Craft enough of the fault entry to do a VA space translation
-    fault_entry.fault_type = UVM_FAULT_TYPE_INVALID_PTE;
-
-    if (channel_info->sysmem)
-        fault_entry.instance_ptr.aperture = UVM_APERTURE_SYS;
-    else
-        fault_entry.instance_ptr.aperture = UVM_APERTURE_VID;
-    fault_entry.instance_ptr.address = channel_info->base;
-
-    if (channel_info->channelEngineType == UVM_GPU_CHANNEL_ENGINE_TYPE_GR) {
-        fault_entry.fault_source.client_type     = UVM_FAULT_CLIENT_TYPE_GPC;
-        fault_entry.fault_source.mmu_engine_type = UVM_MMU_ENGINE_TYPE_GRAPHICS;
-        fault_entry.fault_source.ve_id           = params->ve_id;
-        // Translated to the SMC engine-local VEID
-        fault_entry.fault_source.ve_id += channel_info->smcEngineVeIdOffset;
-
-    }
-    else if (channel_info->channelEngineType == UVM_GPU_CHANNEL_ENGINE_TYPE_CE &&
-             gpu->parent->non_replayable_faults_supported) {
-        fault_entry.fault_source.client_type     = UVM_FAULT_CLIENT_TYPE_HUB;
-        fault_entry.fault_source.mmu_engine_type = UVM_MMU_ENGINE_TYPE_CE;
-        fault_entry.fault_source.ve_id           = 0;
-    }
-    else {
-        status = NV_ERR_INVALID_CHANNEL;
-        goto out;
-    }
-
-    // We can ignore the return code because this ioctl only cares about whether
-    // the provided channel + VEID matches the provided VA space. In all of the
-    // non-NV_OK cases the translation will fail and we should return
-    // NV_ERR_INVALID_CHANNEL. channel_va_space == NULL for all such cases.
-    (void)uvm_gpu_fault_entry_to_va_space(gpu, &fault_entry, &channel_va_space);
-
-    if (channel_va_space == va_space)
-        status = NV_OK;
-    else
-        status = NV_ERR_INVALID_CHANNEL;
-
-out:
-    if (va_space_filp) {
-        if (va_space)
-            uvm_va_space_up_read(va_space);
-        fput(va_space_filp);
-    }
-
-    uvm_kvfree(channel_info);
-
-    return status;
 }

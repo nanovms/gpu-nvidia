@@ -25,6 +25,8 @@
 
 // Support for HMM ( https://docs.kernel.org/mm/hmm.html ):
 
+#if UVM_IS_CONFIG_HMM()
+
 #ifdef NVCPU_X86_64
 static bool uvm_disable_hmm = false;
 MODULE_PARM_DESC(uvm_disable_hmm,
@@ -46,8 +48,6 @@ MODULE_PARM_DESC(uvm_disable_hmm,
 #endif
 
 module_param(uvm_disable_hmm, bool, 0444);
-
-#if UVM_IS_CONFIG_HMM()
 
 #include <linux/hmm.h>
 #include <linux/rmap.h>

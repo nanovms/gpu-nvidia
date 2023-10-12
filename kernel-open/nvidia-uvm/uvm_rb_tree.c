@@ -21,9 +21,11 @@
 
 *******************************************************************************/
 
+#include <uvm_nanos.h>
+
 #include "uvm_rb_tree.h"
 
-static uvm_rb_tree_node_t *get_uvm_rb_tree_node(struct rb_node *rb_node)
+static uvm_rb_tree_node_t *get_uvm_rb_tree_node(rbnode rb_node)
 {
     return rb_entry(rb_node, uvm_rb_tree_node_t, rb_node);
 }
@@ -33,7 +35,7 @@ static uvm_rb_tree_node_t *uvm_rb_tree_find_node(uvm_rb_tree_t *tree,
                                                  uvm_rb_tree_node_t **parent,
                                                  uvm_rb_tree_node_t **next)
 {
-    struct rb_node *rb_node = tree->rb_root.rb_node;
+    rbnode rb_node = tree->rb_root.root;
     uvm_rb_tree_node_t *node = NULL;
     uvm_rb_tree_node_t *_parent = NULL;
 
@@ -41,9 +43,9 @@ static uvm_rb_tree_node_t *uvm_rb_tree_find_node(uvm_rb_tree_t *tree,
         node = get_uvm_rb_tree_node(rb_node);
 
         if (key < node->key)
-            rb_node = rb_node->rb_left;
+            rb_node = rb_node->c[0];
         else if (key > node->key)
-            rb_node = rb_node->rb_right;
+            rb_node = rb_node->c[1];
         else
             break;
 
@@ -71,10 +73,21 @@ static uvm_rb_tree_node_t *uvm_rb_tree_find_node(uvm_rb_tree_t *tree,
     return node;
 }
 
+define_closure_function(0, 2, int, uvm_rbt_compare,
+                 rbnode, a, rbnode, b)
+{
+    uvm_rb_tree_node_t *node_a = get_uvm_rb_tree_node(a);
+    uvm_rb_tree_node_t *node_b = get_uvm_rb_tree_node(b);
+    NvU64 key_a = node_a->key;
+    NvU64 key_b = node_b->key;
+
+    return (key_a == key_b) ? 0 : ((key_a < key_b) ? -1 : 1);
+}
+
 void uvm_rb_tree_init(uvm_rb_tree_t *tree)
 {
     memset(tree, 0, sizeof(*tree));
-    tree->rb_root = RB_ROOT;
+    init_rbtree(&tree->rb_root, init_closure(&tree->compare, uvm_rbt_compare), 0);
     INIT_LIST_HEAD(&tree->head);
 }
 
@@ -85,26 +98,24 @@ NV_STATUS uvm_rb_tree_insert(uvm_rb_tree_t *tree, uvm_rb_tree_node_t *node)
     match = uvm_rb_tree_find_node(tree, node->key, &parent, NULL);
     if (match)
         return NV_ERR_IN_USE;
+    init_rbnode(&node->rb_node);
 
     // If there's no parent and we didn't match on the root node, the tree is
     // empty.
     if (!parent) {
-        rb_link_node(&node->rb_node, NULL, &tree->rb_root.rb_node);
-        rb_insert_color(&node->rb_node, &tree->rb_root);
+        rbtree_insert_node(&tree->rb_root, &node->rb_node);
         list_add(&node->list, &tree->head);
         return NV_OK;
     }
 
     if (node->key < parent->key) {
-        rb_link_node(&node->rb_node, &parent->rb_node, &parent->rb_node.rb_left);
         list_add_tail(&node->list, &parent->list);
     }
     else {
-        rb_link_node(&node->rb_node, &parent->rb_node, &parent->rb_node.rb_right);
         list_add(&node->list, &parent->list);
     }
 
-    rb_insert_color(&node->rb_node, &tree->rb_root);
+    rbtree_insert_node(&tree->rb_root, &node->rb_node);
     return NV_OK;
 }
 

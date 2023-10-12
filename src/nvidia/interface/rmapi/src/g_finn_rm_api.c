@@ -21,8 +21,6 @@
 #include "ctrl/ctrlb06f.h"
 
 #if defined(NVRM) /* Kernel Mode */
-#include <stdint.h>
-#include <stddef.h>
 #include "nvport/nvport.h"
 #elif defined(NV_LIBOS) /* LIBOS */
 #include <nvstdint.h>

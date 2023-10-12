@@ -762,6 +762,9 @@ NvU8 osPciReadByte(void *pHandle, NvU32 offset);
 void osPciWriteDword(void *pHandle, NvU32 offset, NvU32 value);
 void osPciWriteWord(void *pHandle, NvU32 offset, NvU16 value);
 void osPciWriteByte(void *pHandle, NvU32 offset, NvU8 value);
+void* osPciAllocHandle(NvU32 Domain, NvU8 Bus, NvU8 Slot, NvU8 Function,
+                       NvU16 *pVendor, NvU16 *pDevice);
+void osPciDeallocHandle(void *pHandle);
 
 // OS RM capabilities calls
 

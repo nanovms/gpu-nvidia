@@ -21,10 +21,7 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-#include "linux_nvswitch.h"
 #include "nv-procfs.h"
-
-#include <linux/fs.h>
 
 #if defined(CONFIG_PROC_FS)
 
@@ -199,7 +196,5 @@ cleanup:
 
 int nvswitch_procfs_init(void) { return 0; }
 void nvswitch_procfs_exit(void) { }
-int nvswitch_procfs_device_add(NVSWITCH_DEV *nvswitch_dev) { return 0; }
-void nvswitch_procfs_device_remove(NVSWITCH_DEV *nvswitch_dev) { }
 
 #endif // CONFIG_PROC_FS

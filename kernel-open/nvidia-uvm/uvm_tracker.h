@@ -26,7 +26,7 @@
 
 #include "uvm_forward_decl.h"
 
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "nvtypes.h"
 #include "nvstatus.h"
 

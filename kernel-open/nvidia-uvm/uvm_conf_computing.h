@@ -30,8 +30,6 @@
 #include "uvm_tracker.h"
 #include "uvm_va_block_types.h"
 
-#include "linux/list.h"
-
 #define UVM_CONF_COMPUTING_AUTH_TAG_SIZE (UVM_CSL_CRYPT_AUTH_TAG_SIZE_BYTES)
 
 // An authentication tag pointer is required by HW to be 16-bytes aligned.
@@ -71,7 +69,7 @@ typedef struct
     // List of free DMA buffers (uvm_conf_computing_dma_buffer_t).
     // A free DMA buffer can be grabbed anytime, though the tracker
     // inside it may still have pending work.
-    struct list_head free_dma_buffers;
+    struct list free_dma_buffers;
 
     // Used to grow the pool when full.
     size_t num_dma_buffers;
@@ -106,7 +104,7 @@ typedef struct
     uvm_page_mask_t encrypted_page_mask;
 
     // See uvm_conf_computing_dma_pool lists
-    struct list_head node;
+    struct list node;
 } uvm_conf_computing_dma_buffer_t;
 
 // Retrieve a DMA buffer from the given DMA allocation pool.

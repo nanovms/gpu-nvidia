@@ -6,6 +6,9 @@ NV_MODULE_LOGGING_NAME ?= nvidia
 
 VERSION_MK_DIR = ../../
 
+TARGET_ARCH ?= x86_64
+OUTPUTDIR ?= _out/Nanos_$(TARGET_ARCH)
+
 include ../../utils.mk
 
 include srcs.mk
@@ -24,6 +27,34 @@ ALL_SRCS += $(NVIDSTRING)
 
 SRC_COMMON = ../common
 CONDITIONAL_CFLAGS :=
+
+include $(NANOS_DIR)/rules.mk
+
+OBJDIR = $(OUTPUTDIR)
+DEPS = $(call BUILD_DEPENDENCY_LIST,$(ALL_SRCS))
+CLEANFILES = $(OUTPUTDIR)/g_nvid_string.c $(NV_KERNEL_O) $(OUTPUTDIR)/version.h \
+	$(OBJS) $(DEPS) $(addsuffix .to_be_processed, $(DEPS))
+
+ifeq ($(UNAME_s),Darwin)
+ELF_TARGET=     -target x86_64-elf
+CFLAGS+=        $(ELF_TARGET)
+LD=             x86_64-elf-ld
+OBJDUMP=        x86_64-elf-objdump
+else
+LD=             $(CROSS_COMPILE)ld
+endif
+
+DEFINES=	-DKERNEL -DKLIB
+
+ifneq ($(NOSMP),)
+DEFINES+=	-DSPIN_LOCK_DEBUG_NOSMP
+else
+DEFINES+=	-DSMP_ENABLE
+endif
+
+CFLAGS+=	$(KERNCFLAGS) -O3 $(INCLUDES) -fPIC $(DEFINES)
+
+LDFLAGS+=	-shared -Bsymbolic -nostdlib -T$(ARCHDIR)/klib.lds
 
 CFLAGS += -include $(SRC_COMMON)/sdk/nvidia/inc/cpuopsys.h
 
@@ -80,7 +111,6 @@ CFLAGS += -fno-stack-protector
 ifeq ($(TARGET_ARCH),x86_64)
   CFLAGS += -msoft-float
   CFLAGS += -mno-red-zone
-  CFLAGS += -mcmodel=kernel
   CFLAGS += -mno-mmx
   CFLAGS += -mno-sse
   CFLAGS += -mno-sse2
@@ -93,8 +123,6 @@ ifeq ($(TARGET_ARCH),aarch64)
   CFLAGS += -mstrict-align
   CONDITIONAL_CFLAGS += $(call TEST_CC_ARG, -mno-outline-atomics)
 endif
-
-CFLAGS += -fno-pic
 
 CFLAGS += -D_LANGUAGE_C
 CFLAGS += -D__NO_CTYPE

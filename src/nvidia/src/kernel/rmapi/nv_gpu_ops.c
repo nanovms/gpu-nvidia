@@ -7030,7 +7030,7 @@ NV_STATUS nvGpuOpsUnsetPageDirectory(struct gpuAddressSpace *vaSpace)
     NV0080_CTRL_DMA_UNSET_PAGE_DIRECTORY_PARAMS params = {0};
     OBJGPU *pGpu = NULL;
     OBJVASPACE *pVAS = NULL;
-    RsClient *pClient;
+    RsClient *pClient = NULL;
     RM_API *pRmApi = rmapiGetInterface(RMAPI_GPU_LOCK_INTERNAL);
 
     if (!vaSpace)
@@ -7230,7 +7230,7 @@ NV_STATUS nvGpuOpsFreeDupedHandle(struct gpuDevice *device,
     Memory *pMemory = NULL;
     OBJGPU *pMappingGpu = NULL;
     RM_API *pRmApi = rmapiGetInterface(RMAPI_GPU_LOCK_INTERNAL);
-    RsClient *pClient;
+    RsClient *pClient = NULL;
     Subdevice *pSubdevice;
     NvHandle hClient;
 
@@ -8885,7 +8885,7 @@ NV_STATUS nvGpuOpsGetChannelResourcePtes(struct gpuAddressSpace *vaSpace,
     PMEMORY_DESCRIPTOR pMemDesc = NULL;
     OBJGPU *pMappingGpu = NULL;
     OBJVASPACE *pVAS = NULL;
-    RsClient *pClient;
+    RsClient *pClient = NULL;
     Subdevice *pSubDevice;
 
     if (!vaSpace || !resourceDescriptor || !pGpuExternalMappingInfo)

@@ -22,7 +22,7 @@
 *******************************************************************************/
 
 #include "uvm_common.h"
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_types.h"
 #include "uvm_va_policy.h"
 #include "uvm_va_block.h"
@@ -102,7 +102,7 @@ const uvm_va_policy_t *uvm_va_policy_get_region(uvm_va_block_t *va_block, uvm_va
 
 #if UVM_IS_CONFIG_HMM()
 
-static struct kmem_cache *g_uvm_va_policy_node_cache __read_mostly;
+static heap g_uvm_va_policy_node_cache __read_mostly;
 
 static uvm_va_policy_node_t *uvm_va_policy_node_container(uvm_range_tree_node_t *tree_node)
 {

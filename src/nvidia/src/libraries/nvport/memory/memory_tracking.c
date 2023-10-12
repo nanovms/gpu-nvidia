@@ -1143,7 +1143,7 @@ portMemPrintTrackingInfo
                 portDbgPrintf("  Currently active allocations:\n");
                 bPrinted = NV_TRUE;
             }
-            portDbgPrintf("   - A:%p - 0x%p [%8"NvUPtr_fmtu" bytes] T=%llu ",
+            portDbgPrintf("   - A:%p - 0x%p [%8"NvUPtr_fmtu" bytes] T=%lu ",
                             info.pAllocator,
                             info.pMemory,
                             info.size,

@@ -26,7 +26,7 @@
 // This is non-gpl symbol and not part of LKCA so no need to stub it out
 bool libspdm_random_bytes(uint8_t *output, size_t size)
 {
-    get_random_bytes(output, size);
+    os_get_random_bytes(output, size);
     return true;
 }
 

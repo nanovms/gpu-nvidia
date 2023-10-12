@@ -24,7 +24,7 @@
 #ifndef __UVM_ATS_IBM_H__
 #define __UVM_ATS_IBM_H__
 
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_forward_decl.h"
 #include "uvm_hal_types.h"
 
@@ -161,7 +161,7 @@ struct uvm_ibm_npu_struct
         // These will not be accessed unless there is a GPU VA space registered
         // on a GPU under this NPU. They are protected by bit locks in the locks
         // field.
-        __be64 __iomem *io_addrs[UVM_MAX_ATSD_REGS];
+        u64 *io_addrs[UVM_MAX_ATSD_REGS];
 
         // Actual number of registers in the io_addrs array
         size_t count;

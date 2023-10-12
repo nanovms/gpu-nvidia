@@ -26,7 +26,7 @@
 
 #include "nv_uvm_types.h"
 #include "uvm_extern_decl.h"
-#include "uvm_linux.h"
+#include "uvm_nanos.h"
 #include "uvm_common.h"
 #include "uvm_processors.h"
 #include "uvm_gpu.h"
@@ -78,9 +78,6 @@ struct uvm_global_struct
 
     struct
     {
-        // Lock synchronizing user threads with power management activity
-        uvm_rw_semaphore_t lock;
-
         // Power management state flag; tested by UVM_GPU_WRITE_ONCE()
         // and UVM_GPU_READ_ONCE() to detect accesses to GPUs when
         // UVM is suspended.
@@ -130,7 +127,7 @@ struct uvm_global_struct
     struct
     {
         uvm_mutex_t lock;
-        struct list_head list;
+        struct list list;
     } va_spaces;
 
     // Notify a registered process about the driver state after it's unloaded.

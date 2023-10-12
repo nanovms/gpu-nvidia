@@ -44,19 +44,19 @@ typedef struct uvm_range_group_struct
     atomic_t allow_migration;
 
     // range group ranges in this group
-    struct list_head ranges;
+    struct list ranges;
 
     // Range group ranges in this group that have been migrated from their preferred location. This should always be
     // a subset of the ranges list. Any time this list is modified the migrated_ranges_lock should be acquired.
-    struct list_head migrated_ranges;
+    struct list migrated_ranges;
     uvm_spinlock_t migrated_ranges_lock;
 } uvm_range_group_t;
 
 typedef struct uvm_range_group_range_struct
 {
     uvm_range_tree_node_t node;
-    struct list_head range_group_list_node;
-    struct list_head range_group_migrated_list_node;
+    struct list range_group_list_node;
+    struct list range_group_migrated_list_node;
     uvm_range_group_t *range_group;
 } uvm_range_group_range_t;
 
