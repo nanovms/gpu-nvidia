@@ -33,8 +33,9 @@
 #include "gpu/ce/kernel_ce.h"
 #include "gpu/ce/kernel_ce_private.h"
 
-NvBool ceIsCeGrce(OBJGPU *pGpu, RM_ENGINE_TYPE rmCeEngineType)
+NvBool ceIsCeGrce(OBJGPU *pGpu, NvU32 type)
 {
+    RM_ENGINE_TYPE rmCeEngineType = (RM_ENGINE_TYPE)type;
     NV2080_CTRL_GPU_GET_ENGINE_PARTNERLIST_PARAMS partnerParams = {0};
     KernelFifo *pKernelFifo = GPU_GET_KERNEL_FIFO(pGpu);
 

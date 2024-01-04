@@ -821,12 +821,13 @@ cleanup:
 NV_STATUS  NV_API_CALL nv_vgpu_update_request(
     nvidia_stack_t *sp ,
     const NvU8 *pMdevUuid,
-    VGPU_DEVICE_STATE deviceState,
+    NvU32 state,
     NvU64 *offsets,
     NvU64 *sizes,
     const char *configParams
 )
 {
+    VGPU_DEVICE_STATE deviceState = (VGPU_DEVICE_STATE)state;
     THREAD_STATE_NODE threadState;
     NV_STATUS rmStatus = NV_ERR_OBJECT_NOT_FOUND;
     void *fp = NULL;

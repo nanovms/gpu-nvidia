@@ -244,16 +244,17 @@ NV_STATUS krcErrorSetNotifier_IMPL
     KernelRc          *pKernelRc,
     KernelChannel     *pKernelChannel,
     NvU32              exceptType,
-    RM_ENGINE_TYPE     rmEngineType,
+    NvU32              type,
     RC_NOTIFIER_SCOPE  scope
 )
 {
-    KernelFifo   *pKernelFifo     = GPU_GET_KERNEL_FIFO(pGpu);
-    NvU32         status          = NV_OK;
-    NvU32         flushFlags      = 0;
-    NvBool        bNewListCreated = NV_FALSE;
-    CHANNEL_NODE *pChanNode;
-    CHANNEL_LIST *pChanList;
+    RM_ENGINE_TYPE rmEngineType    = (RM_ENGINE_TYPE)type;
+    KernelFifo    *pKernelFifo     = GPU_GET_KERNEL_FIFO(pGpu);
+    NvU32          status          = NV_OK;
+    NvU32          flushFlags      = 0;
+    NvBool         bNewListCreated = NV_FALSE;
+    CHANNEL_NODE  *pChanNode;
+    CHANNEL_LIST  *pChanList;
 
     NV_ASSERT_OR_RETURN(!gpumgrGetBcEnabledStatus(pGpu), NV_ERR_INVALID_STATE);
     NV_ASSERT_OR_RETURN(pKernelChannel != NULL, NV_ERR_INVALID_CHANNEL);

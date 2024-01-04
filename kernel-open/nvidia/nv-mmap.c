@@ -30,9 +30,10 @@
 int nv_encode_caching(
     pgprot_t *prot,
     NvU32     cache_type,
-    nv_memory_type_t memory_type
+    NvU32     type
 )
 {
+    nv_memory_type_t memory_type = (nv_memory_type_t)type;
     pgprot_t tmp;
 
     if (prot == NULL)
