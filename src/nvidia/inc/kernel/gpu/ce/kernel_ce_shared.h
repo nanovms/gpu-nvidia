@@ -30,7 +30,7 @@
  * Routines shared between CE and KCE.
  */
 
-NvBool ceIsCeGrce(OBJGPU *pGpu, NvU32 ceEngineType);
+NvBool ceIsCeGrce(OBJGPU *pGpu, RM_ENGINE_TYPE rmCeEngineType);
 NvU32 ceCountGrCe(OBJGPU *pGpu);
 
 #endif
