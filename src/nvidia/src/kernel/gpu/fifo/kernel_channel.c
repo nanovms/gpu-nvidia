@@ -3280,7 +3280,7 @@ kchannelGetChildIterator
 (
     KernelChannel *pKernelChannel,
     NvU32 classID,
-    NvU32 engineID,
+    RM_ENGINE_TYPE engineID,
     KernelChannelChildIterator *pIter
 )
 {

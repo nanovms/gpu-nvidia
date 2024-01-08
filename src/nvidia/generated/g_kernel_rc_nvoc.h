@@ -379,10 +379,10 @@ static inline void krcInitRegistryOverridesDelayed(struct OBJGPU *pGpu, struct K
 #define krcInitRegistryOverridesDelayed(pGpu, pKernelRc) krcInitRegistryOverridesDelayed_IMPL(pGpu, pKernelRc)
 #endif //__nvoc_kernel_rc_h_disabled
 
-NV_STATUS krcErrorSetNotifier_IMPL(struct OBJGPU *pGpu, struct KernelRc *pKernelRc, struct KernelChannel *pKernelChannel, NvU32 exceptType, NvU32 nv2080EngineType, RC_NOTIFIER_SCOPE scope);
+NV_STATUS krcErrorSetNotifier_IMPL(struct OBJGPU *pGpu, struct KernelRc *pKernelRc, struct KernelChannel *pKernelChannel, NvU32 exceptType, RM_ENGINE_TYPE nv2080EngineType, RC_NOTIFIER_SCOPE scope);
 
 #ifdef __nvoc_kernel_rc_h_disabled
-static inline NV_STATUS krcErrorSetNotifier(struct OBJGPU *pGpu, struct KernelRc *pKernelRc, struct KernelChannel *pKernelChannel, NvU32 exceptType, NvU32 nv2080EngineType, RC_NOTIFIER_SCOPE scope) {
+static inline NV_STATUS krcErrorSetNotifier(struct OBJGPU *pGpu, struct KernelRc *pKernelRc, struct KernelChannel *pKernelChannel, NvU32 exceptType, RM_ENGINE_TYPE nv2080EngineType, RC_NOTIFIER_SCOPE scope) {
     NV_ASSERT_FAILED_PRECOMP("KernelRc was disabled!");
     return NV_ERR_NOT_SUPPORTED;
 }
