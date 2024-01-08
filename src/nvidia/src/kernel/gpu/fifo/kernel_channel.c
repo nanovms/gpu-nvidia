@@ -3280,11 +3280,10 @@ kchannelGetChildIterator
 (
     KernelChannel *pKernelChannel,
     NvU32 classID,
-    RM_ENGINE_TYPE type,
+    RM_ENGINE_TYPE engineID,
     KernelChannelChildIterator *pIter
 )
 {
-    NvU32 engineID = (NvU32)type;
     RsClient *pClient = RES_GET_CLIENT(pKernelChannel);
     NV_ASSERT_OR_RETURN_VOID(pIter != NULL);
 

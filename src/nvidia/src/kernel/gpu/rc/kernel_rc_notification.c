@@ -244,11 +244,10 @@ NV_STATUS krcErrorSetNotifier_IMPL
     KernelRc          *pKernelRc,
     KernelChannel     *pKernelChannel,
     NvU32              exceptType,
-    NvU32              type,
+    RM_ENGINE_TYPE     rmEngineType,
     RC_NOTIFIER_SCOPE  scope
 )
 {
-    RM_ENGINE_TYPE rmEngineType    = (RM_ENGINE_TYPE)type;
     KernelFifo    *pKernelFifo     = GPU_GET_KERNEL_FIFO(pGpu);
     NvU32          status          = NV_OK;
     NvU32          flushFlags      = 0;
