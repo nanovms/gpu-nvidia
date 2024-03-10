@@ -32,16 +32,12 @@
 //
 // All locking is up to the caller.
 
-declare_closure_struct(0, 2, int, uvm_range_compare,
-                 rbnode, a, rbnode, b);
-declare_closure_struct(0, 1, boolean, uvm_range_print,
-                 rbnode, n);
 typedef struct uvm_range_tree_struct
 {
     // Tree of uvm_range_tree_node_t's sorted by start.
     struct rbtree rb_root;
-    closure_struct(uvm_range_compare, compare);
-    closure_struct(uvm_range_print, print);
+    closure_struct(rb_key_compare, compare);
+    closure_struct(rbnode_handler, print);
 
     // List of uvm_range_tree_node_t's sorted by start. This is an optimization
     // to avoid calling rb_next and rb_prev frequently, particularly while

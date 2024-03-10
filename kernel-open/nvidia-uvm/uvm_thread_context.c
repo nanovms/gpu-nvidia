@@ -70,8 +70,6 @@ typedef struct  {
 
 // The thread's context information is stored in the array or the red-black
 // tree.
-declare_closure_struct(0, 2, int, uvm_threadctx_compare,
-                       rbnode, a, rbnode, b);
 typedef struct  {
     // Small array where thread contexts are stored first. Each array entry
     // can be atomically claimed or released.
@@ -82,7 +80,7 @@ typedef struct  {
     // UVM module is entered, there is one addition, one removal, and one
     // lookup. The same UVM call may result on additional lookups.
     struct rbtree tree;
-    closure_struct(uvm_threadctx_compare, compare);
+    closure_struct(rb_key_compare, compare);
 
     // Spinlock protecting the tree. A raw lock is chosen because UVM locks
     // rely on thread context information to be available for lock tracking.
@@ -119,8 +117,8 @@ bool uvm_thread_context_global_initialized(void)
     return g_thread_context_table_initialized;
 }
 
-define_closure_function(0, 2, int, uvm_threadctx_compare,
-                 rbnode, a, rbnode, b)
+closure_func_basic(rb_key_compare, int, uvm_threadctx_compare,
+                   rbnode a, rbnode b)
 {
     uvm_thread_context_t *thread_context_a = rb_entry(a, uvm_thread_context_t, node);
     uvm_thread_context_t *thread_context_b = rb_entry(b, uvm_thread_context_t, node);
@@ -141,7 +139,8 @@ void uvm_thread_context_global_init(void)
 
         spin_lock_init(&table_entry->tree_lock);
         init_rbtree(&table_entry->tree,
-                    init_closure(&table_entry->compare, uvm_threadctx_compare), 0);
+                    init_closure_func(&table_entry->compare, rb_key_compare, uvm_threadctx_compare),
+                    0);
     }
 
     g_thread_context_table_initialized = true;

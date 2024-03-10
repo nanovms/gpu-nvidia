@@ -36,30 +36,26 @@ typedef struct {
     const char *file;
 } nv_memdbg_node_t;
 
-declare_closure_struct(0, 2, int, memdbg_compare,
-                 rbnode, a, rbnode, b);
-declare_closure_struct(0, 1, boolean, memdbg_print,
-                 rbnode, n);
 struct
 {
     struct rbtree rb_root;
     NvU64 untracked_bytes;
     NvU64 num_untracked_allocs;
     nv_spinlock_t lock;
-    closure_struct(memdbg_compare, compare);
-    closure_struct(memdbg_print, print);
+    closure_struct(rb_key_compare, compare);
+    closure_struct(rbnode_handler, print);
 } g_nv_memdbg;
 
-define_closure_function(0, 2, int, memdbg_compare,
-                 rbnode, a, rbnode, b)
+closure_func_basic(rb_key_compare, int, memdbg_compare,
+                   rbnode a, rbnode b)
 {
     void * sa = ((nv_memdbg_node_t *)a)->addr;
     void * sb = ((nv_memdbg_node_t *)b)->addr;
     return sa == sb ? 0 : (sa < sb ? -1 : 1);
 }
 
-define_closure_function(0, 1, boolean, memdbg_print,
-                 rbnode, n)
+closure_func_basic(rbnode_handler, boolean, memdbg_print,
+                   rbnode n)
 {
     rprintf(" %p", ((nv_memdbg_node_t *)n)->addr);
     return true;
@@ -68,8 +64,9 @@ define_closure_function(0, 1, boolean, memdbg_print,
 void nv_memdbg_init(void)
 {
     NV_SPIN_LOCK_INIT(&g_nv_memdbg.lock);
-    init_rbtree(&g_nv_memdbg.rb_root, init_closure(&g_nv_memdbg.compare, memdbg_compare),
-                init_closure(&g_nv_memdbg.print, memdbg_print));
+    init_rbtree(&g_nv_memdbg.rb_root,
+                init_closure_func(&g_nv_memdbg.compare, rb_key_compare, memdbg_compare),
+                init_closure_func(&g_nv_memdbg.print, rbnode_handler, memdbg_print));
 }
 
 static void nv_memdbg_insert_node(nv_memdbg_node_t *new)

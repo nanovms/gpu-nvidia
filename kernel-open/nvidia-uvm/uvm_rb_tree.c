@@ -73,8 +73,8 @@ static uvm_rb_tree_node_t *uvm_rb_tree_find_node(uvm_rb_tree_t *tree,
     return node;
 }
 
-define_closure_function(0, 2, int, uvm_rbt_compare,
-                 rbnode, a, rbnode, b)
+closure_func_basic(rb_key_compare, int, uvm_rbt_compare,
+                   rbnode a, rbnode b)
 {
     uvm_rb_tree_node_t *node_a = get_uvm_rb_tree_node(a);
     uvm_rb_tree_node_t *node_b = get_uvm_rb_tree_node(b);
@@ -87,7 +87,8 @@ define_closure_function(0, 2, int, uvm_rbt_compare,
 void uvm_rb_tree_init(uvm_rb_tree_t *tree)
 {
     memset(tree, 0, sizeof(*tree));
-    init_rbtree(&tree->rb_root, init_closure(&tree->compare, uvm_rbt_compare), 0);
+    init_rbtree(&tree->rb_root, init_closure_func(&tree->compare, rb_key_compare, uvm_rbt_compare),
+                0);
     INIT_LIST_HEAD(&tree->head);
 }
 
