@@ -6,6 +6,8 @@
 # Makefile for NVIDIA Nanos GPU driver klib
 ###########################################################################
 
+include $(NANOS_DIR)/vars.mk
+
 TARGET_ARCH ?= x86_64
 OUTPUTDIR ?= _out/Nanos_$(TARGET_ARCH)
 
