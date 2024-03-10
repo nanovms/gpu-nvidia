@@ -218,8 +218,7 @@ void nvlink_free(void *ptr)
 
 char * nvlink_strcpy(char *dest, const char *src)
 {
-    runtime_memcpy(dest, src, runtime_strlen(src) + 1);
-    return dest;
+    return os_string_copy(dest, src);
 }
 
 int nvlink_strcmp(const char *dest, const char *src)

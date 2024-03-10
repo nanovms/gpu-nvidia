@@ -1957,7 +1957,7 @@ int uvm_tools_init(dev_t uvm_base_dev)
 
     open = closure(heap_locked(get_kernel_heaps()), uvm_tools_open);
     assert(open != INVALID_ADDRESS);
-    if (!create_special_file("/dev/nvidia-uvm-tools", open, 0, MAJOR(uvm_tools_dev))) {
+    if (!create_special_file(ss("/dev/nvidia-uvm-tools"), open, 0, MAJOR(uvm_tools_dev))) {
         UVM_ERR_PRINT("cdev_add (major %u, minor %u) failed: %d\n", MAJOR(uvm_tools_dev),
                       MINOR(uvm_tools_dev), ret);
         goto err_stop_thread;

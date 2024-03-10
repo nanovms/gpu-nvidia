@@ -306,11 +306,12 @@ nvswitch_os_print
 )
 {
     buffer b = little_stack_buffer(16 * KB);
-    buffer f = alloca_wrap_cstring(fmt);
     va_list arglist;
+    NvS32 char_count;
 
     va_start(arglist, fmt);
-    vbprintf(b, f, &arglist);
+    char_count = os_vsnprintf(buffer_ref(b, 0), b->length, fmt, arglist);
+    buffer_produce(b, MIN(char_count, b->length - 1));
     buffer_print(b);
     va_end(arglist);
 }
@@ -764,8 +765,8 @@ nvswitch_os_strncmp
     NvLength length
 )
 {
-    NvLength l1 = runtime_strlen(s1) + 1;
-    NvLength l2 = runtime_strlen(s2) + 1;
+    NvLength l1 = os_string_length(s1) + 1;
+    NvLength l2 = os_string_length(s2) + 1;
     length = MIN(length, l1);
     length = MIN(length, l2);
     return memcmp(s1, s2, length);
@@ -779,7 +780,7 @@ nvswitch_os_strncat
     NvLength length
 )
 {
-    NvLength l1 = runtime_strlen(s1);
+    NvLength l1 = os_string_length(s1);
     s1[l1 + length] = '\0';
     return strncpy (s1 + l1, s2, length);
 }
@@ -895,11 +896,12 @@ nvswitch_os_assert_log
 {
     va_list arglist;
     char fmt_printk[NVSWITCH_LOG_BUFFER_SIZE];
+    NvS32 char_count;
 
     va_start(arglist, fmt);
-    os_vsnprintf(fmt_printk, sizeof(fmt_printk), fmt, arglist);
+    char_count = os_vsnprintf(fmt_printk, sizeof(fmt_printk), fmt, arglist);
     va_end(arglist);
-    buffer_print(alloca_wrap_cstring(fmt_printk));
+    rput_sstring(isstring(fmt_printk, MIN(char_count, sizeof(fmt_printk) - 1)));
      dbg_breakpoint();
 }
 

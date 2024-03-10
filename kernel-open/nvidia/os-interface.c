@@ -348,7 +348,7 @@ char* NV_API_CALL os_string_copy(
     const char *src
 )
 {
-    runtime_memcpy(dst, src, runtime_strlen(src) + 1);
+    runtime_memcpy(dst, src, os_string_length(src) + 1);
     return dst;
 }
 
@@ -356,12 +356,15 @@ NvU32 NV_API_CALL os_string_length(
     const char* str
 )
 {
-    return strlen(str);
+    NvU32 len = 0;
+    while (str[len])
+        len++;
+    return len;
 }
 
 NvU32 NV_API_CALL os_strtoul(const char *str, char **endp, NvU32 base)
 {
-    buffer b = alloca_wrap_cstring(str);
+    buffer b = alloca_wrap_buffer(str, os_string_length(str));
     u64 result;
 
     parse_int(b, base, &result);
@@ -372,7 +375,8 @@ NvU32 NV_API_CALL os_strtoul(const char *str, char **endp, NvU32 base)
 
 NvS32 NV_API_CALL os_string_compare(const char *str1, const char *str2)
 {
-    return strcmp(str1, str2);
+    return runtime_strcmp(isstring((char *)str1, os_string_length(str1)),
+                          isstring((char *)str2, os_string_length(str2)));
 }
 
 void *os_mem_copy_custom(
@@ -789,42 +793,14 @@ int NV_API_CALL nv_printf(NvU32 debuglevel, const char *printf_format, ...)
     {
         buffer b = little_stack_buffer(16 * KB);
         vstart(arglist, printf_format);
-        buffer f = alloca_wrap_buffer(printf_format, runtime_strlen(printf_format));
-        vbprintf(b, f, &arglist);
+        NvS32 chars = os_vsnprintf(buffer_ref(b, 0), b->length, printf_format, arglist);
+        chars_written = MIN(chars, b->length - 1);
         vend(arglist);
+        buffer_produce(b, chars_written);
         buffer_print(b);
-        chars_written = buffer_length(b);
     }
 
     return chars_written;
-}
-
-static int vsnprintf(char *str, u64 size, const char *fmt, vlist ap)
-{
-    buffer b = allocate_buffer(heap_locked(get_kernel_heaps()), size);
-    if (b == INVALID_ADDRESS) {
-        msg_err("buffer allocation failed\n");
-        if (size > 0)
-            str[0] = '\0';
-        return 0;
-    }
-    buffer f = alloca_wrap_buffer(fmt, runtime_strlen(fmt));
-    vlist *v;
-#if defined(NVCPU_X86_64)
-    v = (vlist *)ap;
-#else
-    v = &ap;
-#endif
-    vbprintf(b, f, v);
-    int n;
-    if (size > 0) {
-        n = MIN(buffer_length(b), size - 1);
-        runtime_memcpy(str, buffer_ref(b, 0), n);
-        str[n] = '\0';
-    }
-    n = buffer_length(b);
-    deallocate_buffer(b);
-    return n;
 }
 
 NvS32 NV_API_CALL os_snprintf(char *buf, NvU32 size, const char *fmt, ...)
@@ -833,15 +809,167 @@ NvS32 NV_API_CALL os_snprintf(char *buf, NvU32 size, const char *fmt, ...)
     int chars_written;
 
     va_start(arglist, fmt);
-    chars_written = vsnprintf(buf, size, fmt, arglist);
+    chars_written = os_vsnprintf(buf, size, fmt, arglist);
     va_end(arglist);
 
     return chars_written;
 }
 
+#define OS_FMT_SPECIFIER_MIN    'A'
+#define OS_FMT_SPECIFIER_MAX    'x'
+
+struct os_fmt_state {
+    int state;
+    int format;
+    int modifier;
+    int width;
+    int align;
+    int fill;
+    int precision;
+};
+
+static NvS32 os_fmt_string(char *dest, NvS32 size, struct os_fmt_state *s, vlist ap)
+{
+    char *str = varg(ap, char *);
+    int len = os_string_length(str);
+    if ((s->precision > 0) && (s->precision < len))
+        len = s->precision;
+    NvS32 char_count = MAX(len, s->width);
+    NvS32 write_count;
+    if ((len < s->width) && (s->align == 0)) {
+        write_count = MIN(s->width - len, size);
+        if (write_count > 0) {
+            runtime_memset((void *)dest, ' ', write_count);
+            dest += write_count;
+            size -= write_count;
+        }
+    }
+    write_count = MIN(len, size);
+    if (write_count > 0) {
+        runtime_memcpy(dest, str, write_count);
+        dest += write_count;
+        size -= write_count;
+    }
+    if ((len < s->width) && (s->align == '-')) {
+        write_count = MIN(s->width - len, size);
+        if (write_count > 0)
+            runtime_memset((void *)dest, ' ', write_count);
+    }
+    return char_count;
+}
+
+static struct os_formatter {
+    NvS32 (*f)(char *dest, NvS32 size, struct os_fmt_state *s, vlist ap);;
+    int accepts_long;
+} os_formatters[OS_FMT_SPECIFIER_MAX - OS_FMT_SPECIFIER_MIN + 1] = {
+        ['s' - OS_FMT_SPECIFIER_MIN] = {os_fmt_string, 0},
+};
+
+static void os_fmt_reset(struct os_fmt_state *s)
+{
+    s->state = 0;
+    s->format = 0;
+    s->modifier = 0;
+    s->width = 0;
+    s->align = 0;
+    s->fill = 0;
+    s->precision = -1;
+}
+
+static struct os_formatter *os_formatter(char c)
+{
+    int idx = c - OS_FMT_SPECIFIER_MIN;
+    if ((idx >= 0) && (idx <= OS_FMT_SPECIFIER_MAX - OS_FMT_SPECIFIER_MIN))
+        return os_formatters + idx;
+    return NULL;
+}
+
+static NvS32 os_fmt_invalid(char *dest, NvS32 size, const char *fmt, int start_idx, int idx)
+{
+    const char header[] = "[invalid format ";
+    NvS32 ret = sizeof(header) - 1;
+    NvS32 write_count = MIN(size, ret);
+    if (write_count > 0) {
+        runtime_memcpy(dest, header, write_count);
+        dest += write_count;
+        size -= write_count;
+    }
+    write_count = MIN(idx - start_idx + 1, size);
+    if (write_count > 0) {
+        runtime_memcpy(dest, fmt + start_idx, write_count);
+        dest += write_count;
+        size -= write_count;
+    }
+    if (size > 0)
+        *dest = ']';
+    return ret + idx - start_idx + 2;
+}
+
 NvS32 NV_API_CALL os_vsnprintf(char *buf, NvU32 size, const char *fmt, va_list arglist)
 {
-    return vsnprintf(buf, size, fmt, arglist);
+    int start_idx = 0;
+    struct os_fmt_state s;
+    NvS32 idx, buf_idx = 0;
+    char c;
+
+    os_fmt_reset(&s);
+    for (idx = 0; (c = fmt[idx]); idx++) {
+        if (s.state == 1)  {
+            if (idx - start_idx == 1 && (c == '0' || c == '-')) {
+                if (c == '0')
+                    s.fill = '0';
+                else if (c == '-')
+                    s.align = '-';
+                continue;
+            }
+            if ((c >= '0') && (c <= '9')) {
+                if (s.precision == -1) {
+                    if (!s.fill)
+                        s.fill = ' ';
+                    s.width = s.width * 10 + c - '0';
+                } else
+                    s.precision = s.precision * 10 + c - '0';
+            } else if (c == 'l') {
+                if (s.modifier != 0)
+                    buf_idx += os_fmt_invalid(buf + buf_idx, size - buf_idx, fmt, start_idx, idx);
+                else
+                    s.modifier = c;
+            } else if (c == '%') {
+                if (buf_idx < size)
+                    buf[buf_idx] = c;
+                buf_idx++;
+                s.state = 0;
+            } else if (c == '.') {
+                if (s.precision != -1)
+                    buf_idx += os_fmt_invalid(buf + buf_idx, size - buf_idx, fmt, start_idx, idx);
+                else
+                    s.precision = 0;
+            } else {
+                struct os_formatter *formatter = os_formatter(c);
+                if (formatter && formatter->f && (s.modifier != 'l' || formatter->accepts_long)) {
+                    s.format = c;
+                    buf_idx += formatter->f(buf + buf_idx, size - buf_idx, &s, arglist);
+                } else {
+                    buf_idx += os_fmt_invalid(buf + buf_idx, size - buf_idx, fmt, start_idx, idx);
+                }
+                os_fmt_reset(&s);
+            }
+        } else {
+            if ((s.state == 0) && (c == '%')) {
+                s.state = 1;
+                start_idx = idx;
+            } else {
+                if (buf_idx < size)
+                    buf[buf_idx] = c;
+                buf_idx++;
+            }
+        }
+    }
+    if (buf_idx < size)
+        buf[buf_idx] = '\0';
+    else
+        buf[size - 1] = '\0';
+    return buf_idx;
 }
 
 void NV_API_CALL os_log_error(const char *fmt, va_list ap)
@@ -850,7 +978,7 @@ void NV_API_CALL os_log_error(const char *fmt, va_list ap)
 
     NV_SPIN_LOCK_IRQSAVE(&nv_error_string_lock, flags);
 
-    vsnprintf(nv_error_string, MAX_ERROR_STRING, fmt, ap);
+    os_vsnprintf(nv_error_string, MAX_ERROR_STRING, fmt, ap);
     nv_error_string[MAX_ERROR_STRING - 1] = 0;
     printk(KERN_ERR "%s", nv_error_string);
 
@@ -1405,7 +1533,7 @@ NvU32 NV_API_CALL os_get_grid_csp_support(void)
 
 void NV_API_CALL os_bug_check(NvU32 bugCode, const char *bugCodeStr)
 {
-    halt((char *)bugCodeStr);
+    halt_with_code(bugCode, isstring((char *)bugCodeStr, os_string_length(bugCodeStr)));
 }
 
 NV_STATUS NV_API_CALL os_get_euid(NvU32 *pSecToken)
