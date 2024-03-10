@@ -144,24 +144,23 @@ out:
     return status;
 }
 
-closure_function(6, 1, void, uvm_populate_handler,
+closure_function(6, 1, boolean, uvm_populate_handler,
                  u64, start, u64, end, int, min_prot, bool, touch, uvm_populate_permissions_t, populate_permissions, NV_STATUS *, status,
                  vmap, m)
 {
     u64 start = bound(start);
     u64 end = bound(end);
-    if (start == end)
-        return;
     if (m->node.r.start > start) {
         *bound(status) = NV_ERR_INVALID_ADDRESS;
-        return;
+        return false;
     }
     *bound(status) = uvm_populate_pageable_vma(m, start, end - start, bound(min_prot), bound(touch),
                                                bound(populate_permissions));
     if ((end <= m->node.r.end) || (*bound(status) != NV_OK))
-        bound(start) = end;
+        return false;
     else
         bound(start) = m->node.r.end;
+    return true;
 }
 
 NV_STATUS uvm_populate_pageable(struct mm_struct *mm,
