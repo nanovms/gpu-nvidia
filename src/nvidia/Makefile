@@ -2,6 +2,8 @@
 # Makefile for nv-kernel.o
 ###########################################################################
 
+include $(NANOS_DIR)/vars.mk
+
 NV_MODULE_LOGGING_NAME ?= nvidia
 
 VERSION_MK_DIR = ../../
