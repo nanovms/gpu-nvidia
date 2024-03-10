@@ -485,16 +485,17 @@ static uvm_cpu_chunk_t *uvm_cpu_chunk_first_in_region(uvm_va_block_t *va_block,
                                             (va_block),                                 \
                                             uvm_va_block_region_from_block((va_block)))
 
-closure_function(3, 1, void, uvm_va_block_range_handler,
+closure_function(3, 1, boolean, uvm_va_block_range_handler,
                  u64, start, u64, end, vmap *, ret_m,
                  vmap, m)
 {
-    if (bound(ret_m))
-        return;
     u64 start = bound(start);
     u64 end = bound(end);
-    if ((m->node.r.end > start) && (m->node.r.start < end))
+    if ((m->node.r.end > start) && (m->node.r.start < end)) {
         *bound(ret_m) = m;
+        return false;
+    }
+    return true;
 }
 
 vmap uvm_va_block_find_vma_region(uvm_va_block_t *va_block,

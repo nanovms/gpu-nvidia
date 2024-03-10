@@ -30,21 +30,20 @@
 #include "uvm_gpu.h"
 #include "uvm_va_space_mm.h"
 
-closure_function(3, 1, void, uvm_valid_range_handler,
+closure_function(3, 1, boolean, uvm_valid_range_handler,
                  u64, start, u64, end, boolean *, ok,
                  vmap, m)
 {
-    if (bound(start) == bound(end))
-        return;
     if (m->node.r.start > bound(start)) {
         *bound(ok) = false;
-        return;
+        return false;
     }
     if (bound(end) <= m->node.r.end) {
         *bound(ok) = true;
-        bound(start) = bound(end);
+        return false;
     } else {
         bound(start) = m->node.r.end;
+        return true;
     }
 }
 
