@@ -27,7 +27,7 @@
 #include "nv-pci.h"
 #include "nv-register-module.h"
 
-extern const char *nv_device_name;
+extern const sstring nv_device_name;
 extern nvidia_module_t nv_fops;
 
 void        nv_acpi_register_notifier   (nv_nanos_state_t *);

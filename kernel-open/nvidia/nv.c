@@ -164,7 +164,7 @@ static int          nvos_free_alloc(nv_alloc_t *);
 static int           nvidia_ctl_open        (nvfd nvlfp);
 static int           nvidia_ctl_close       (nvfd nvlfp);
 
-const char *nv_device_name = MODULE_NAME;
+const sstring nv_device_name = ss_static_init(MODULE_NAME);
 
 static sysreturn nvfd_open(u32 minor, file f);
 
@@ -653,7 +653,7 @@ static void *nv_alloc_file_private(void)
     if (!nvlfp)
         return NULL;
 
-    nvlfp->waitqueue = allocate_blockq(heap_locked(get_kernel_heaps()), "nvidia gpu");
+    nvlfp->waitqueue = allocate_blockq(heap_locked(get_kernel_heaps()), ss("nvidia gpu"));
     if (nvlfp->waitqueue == INVALID_ADDRESS)
     {
         NV_KFREE(nvlfp, sizeof(*nvlfp));
@@ -3072,7 +3072,7 @@ void NV_API_CALL nv_fetch_firmware(
     pagecache_node pn;
     range r;
 
-    fsf = fsfile_open(alloca_wrap_cstring(file_path));
+    fsf = fsfile_open(isstring((char *)file_path, os_string_length(file_path)));
     if (!fsf)
         return;
     len = fsfile_get_length(fsf);
@@ -3121,7 +3121,7 @@ const void* NV_API_CALL nv_get_firmware(
     buffer_handler bh;
     status_handler sh;
 
-    fwfile_v = split(h, alloca_wrap_cstring(file_path), '/');
+    fwfile_v = split(h, alloca_wrap_buffer(file_path, os_string_length(file_path)), '/');
     fwfile_t = resolve_path(filesystem_getroot(fs), fwfile_v);
     split_dealloc(fwfile_v);
     if (!fwfile_t)

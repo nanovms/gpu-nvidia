@@ -403,12 +403,14 @@ typedef struct nvidia_event
 #define memcpy(d, s, n)         ({ runtime_memcpy(d, s, n); d; })
 #define memset(p, v, l)         ({ runtime_memset((void *)(p), v, l); (void *)(p); })
 #define memcmp                  runtime_memcmp
-#define strcmp                  runtime_strcmp
-#define strlen                  runtime_strlen
-#define strstr                  runtime_strstr
-#define strchr                  runtime_strchr
+#define strcmp                  os_string_compare
+#define strlen                  os_string_length
+#define strstr(_h, _n)          \
+    runtime_strstr(isstring((char *)(_h), os_string_length(_h)),    \
+                   isstring((char *)(_n), os_string_length(_n)))
+#define strchr(_s, _c)          runtime_strchr(isstring((char *)(_s), os_string_length(_s)), _c)
 #define strncpy(dest, src, len) ({  \
-    runtime_memcpy(dest, src, MIN(runtime_strlen(src) + 1, len)); dest; \
+    runtime_memcpy(dest, src, MIN(os_string_length(src) + 1, len)); dest; \
 })
 #define snprintf                rsnprintf
 

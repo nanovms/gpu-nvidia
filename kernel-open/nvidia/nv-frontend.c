@@ -142,7 +142,7 @@ int nvidia_register_module(nvidia_module_t *module)
         rc = -ENOMEM;
         goto done;
     }
-    if (!create_special_file("/dev/nvidiactl", open, 0,
+    if (!create_special_file(ss("/dev/nvidiactl"), open, 0,
         makedev(NV_MAJOR_DEVICE_NUMBER, NV_CONTROL_DEVICE_MINOR))) {
         deallocate_closure(open);
         rc = -ENOSPC;
@@ -219,7 +219,7 @@ int nvidia_frontend_add_device(nvidia_module_t *module, nv_nanos_state_t * devic
                     file_path[12] = '0' + (minor / 10) % 10;
                     file_path[13] = '0' + minor % 10;
                 }
-                if (!create_special_file(file_path, open, 0,
+                if (!create_special_file(isstring(file_path, sizeof(file_path) - 1), open, 0,
                     makedev(NV_MAJOR_DEVICE_NUMBER, minor))) {
                     deallocate_closure(open);
                     rc = -1;

@@ -421,7 +421,7 @@ static int uvm_chardev_create(void)
 
     open = closure(heap_locked(get_kernel_heaps()), uvm_open);
     assert(open != INVALID_ADDRESS);
-    if (create_special_file("/dev/nvidia-uvm", open, sizeof(struct uvm_fd), 0)) {
+    if (create_special_file(ss("/dev/nvidia-uvm"), open, sizeof(struct uvm_fd), 0)) {
         return 0;
     } else {
         UVM_ERR_PRINT("create_special_file failed\n");
