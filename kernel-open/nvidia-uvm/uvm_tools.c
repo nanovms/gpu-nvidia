@@ -627,8 +627,8 @@ closure_func_basic(fdesc_ioctl, sysreturn, uvm_tools_ioctl,
     return ioctl_generic(&filp->f->f, cmd, ap);
 }
 
-closure_function(0, 1, sysreturn, uvm_tools_open,
-                 file, f)
+closure_func_basic(spec_file_open, sysreturn, uvm_tools_open,
+                   file f)
 {
     uvm_tools_fd fd;
     NV_STATUS status = uvm_global_get_status();
@@ -1955,7 +1955,7 @@ int uvm_tools_init(dev_t uvm_base_dev)
     if (ret < 0)
         goto err_cache_destroy;
 
-    open = closure(heap_locked(get_kernel_heaps()), uvm_tools_open);
+    open = closure_func(heap_locked(get_kernel_heaps()), spec_file_open, uvm_tools_open);
     assert(open != INVALID_ADDRESS);
     if (!create_special_file(ss("/dev/nvidia-uvm-tools"), open, 0, MAJOR(uvm_tools_dev))) {
         UVM_ERR_PRINT("cdev_add (major %u, minor %u) failed: %d\n", MAJOR(uvm_tools_dev),

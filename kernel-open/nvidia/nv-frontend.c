@@ -100,7 +100,7 @@ static int remove_device(nvidia_module_t *module, nv_nanos_state_t *device)
 
 closure_function(1, 1, sysreturn, nvidia_frontend_open,
                  u32, minor,
-                 file, f)
+                 file f)
 {
     sysreturn rc = -ENODEV;
     nvidia_module_t *module = NULL;

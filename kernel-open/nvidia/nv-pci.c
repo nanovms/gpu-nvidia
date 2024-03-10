@@ -259,8 +259,8 @@ failed:
 }
 
 /* find nvidia devices and set initial state */
-closure_function(0, 1, boolean, nv_pci_probe,
-                 pci_dev, d)
+closure_func_basic(pci_probe, boolean, nv_pci_probe,
+                   pci_dev d)
 {
     u16 dev_class, dev_subclass, dev_vendor, dev_id, sub_vendor, sub_dev;
     u16 cmd;
@@ -720,7 +720,7 @@ int nv_pci_register_driver(void)
     {
         return 0;
     }
-    pci_probe probe = closure(heap_locked(get_kernel_heaps()), nv_pci_probe);
+    pci_probe probe = closure_func(heap_locked(get_kernel_heaps()), pci_probe, nv_pci_probe);
     if (probe == INVALID_ADDRESS)
         return -1;
     register_pci_driver(probe, 0);

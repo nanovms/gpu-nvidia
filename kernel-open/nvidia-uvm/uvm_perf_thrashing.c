@@ -139,9 +139,6 @@ typedef struct
     struct list                  va_block_list_entry;
 } pinned_page_t;
 
-declare_closure_struct(0, 2, void, thrashing_unpin_pages,
-                       u64, expiry, u64, overruns);
-
 // Per-VA space data structures and policy configuration
 typedef struct
 {
@@ -152,7 +149,7 @@ typedef struct
     {
         // Work descriptor that is executed asynchronously by a helper thread
         struct timer                           dwork;
-        closure_struct(thrashing_unpin_pages, dwork_handler);
+        closure_struct(timer_handler, dwork_handler);
 
         // List of pinned pages. They are (mostly) ordered by unpin deadline.
         // New entries are inserted blindly at the tail since the expectation
@@ -1754,8 +1751,8 @@ const uvm_page_mask_t *uvm_perf_thrashing_get_thrashing_pages(uvm_va_block_t *va
 }
 
 #define TIMER_GRANULARITY_NS 20000ULL
-define_closure_function(0, 2, void, thrashing_unpin_pages,
-                        u64, expiry, u64, overruns)
+closure_func_basic(timer_handler, void, thrashing_unpin_pages,
+                   u64 expiry, u64 overruns)
 {
     if (overruns == timer_disabled)
         return;
@@ -1861,7 +1858,8 @@ NV_STATUS uvm_perf_thrashing_load(uvm_va_space_t *va_space)
     uvm_spin_lock_init(&va_space_thrashing->pinned_pages.lock, UVM_LOCK_ORDER_LEAF);
     INIT_LIST_HEAD(&va_space_thrashing->pinned_pages.list);
     init_timer(&va_space_thrashing->pinned_pages.dwork);
-    init_closure(&va_space_thrashing->pinned_pages.dwork_handler, thrashing_unpin_pages);
+    init_closure_func(&va_space_thrashing->pinned_pages.dwork_handler, timer_handler,
+                      thrashing_unpin_pages);
 
     return NV_OK;
 }

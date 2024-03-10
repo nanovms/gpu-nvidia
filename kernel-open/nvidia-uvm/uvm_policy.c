@@ -32,7 +32,7 @@
 
 closure_function(3, 1, boolean, uvm_valid_range_handler,
                  u64, start, u64, end, boolean *, ok,
-                 vmap, m)
+                 vmap m)
 {
     if (m->node.r.start > bound(start)) {
         *bound(ok) = false;

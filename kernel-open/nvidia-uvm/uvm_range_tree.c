@@ -95,8 +95,8 @@ static uvm_range_tree_node_t *range_node_find(uvm_range_tree_t *tree,
     return node;
 }
 
-define_closure_function(0, 2, int, uvm_range_compare,
-                 rbnode, a, rbnode, b)
+closure_func_basic(rb_key_compare, int, uvm_range_compare,
+                   rbnode a, rbnode b)
 {
     uvm_range_tree_node_t *node_a = struct_from_field(a, uvm_range_tree_node_t *, rb_node);
     uvm_range_tree_node_t *node_b = struct_from_field(b, uvm_range_tree_node_t *, rb_node);
@@ -106,8 +106,8 @@ define_closure_function(0, 2, int, uvm_range_compare,
     return (start_a == start_b) ? 0 : ((start_a < start_b) ? -1 : 1);
 }
 
-define_closure_function(0, 1, boolean, uvm_range_print,
-                 rbnode, n)
+closure_func_basic(rbnode_handler, boolean, uvm_range_print,
+                   rbnode n)
 {
     uvm_range_tree_node_t *node = struct_from_field(n, uvm_range_tree_node_t *, rb_node);
     rprintf(" [0x%lx 0x%lx]", node->start, node->end);
@@ -117,8 +117,9 @@ define_closure_function(0, 1, boolean, uvm_range_print,
 void uvm_range_tree_init(uvm_range_tree_t *tree)
 {
     memset(tree, 0, sizeof(*tree));
-    init_rbtree(&tree->rb_root, init_closure(&tree->compare, uvm_range_compare),
-                init_closure(&tree->print, uvm_range_print));
+    init_rbtree(&tree->rb_root,
+                init_closure_func(&tree->compare, rb_key_compare, uvm_range_compare),
+                init_closure_func(&tree->print, rbnode_handler, uvm_range_print));
     INIT_LIST_HEAD(&tree->head);
 }
 

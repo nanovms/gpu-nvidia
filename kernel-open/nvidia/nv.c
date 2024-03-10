@@ -3087,7 +3087,7 @@ void NV_API_CALL nv_fetch_firmware(
 
 closure_function(2, 1, status, nv_get_firmware_ok,
                  context, ctx, buffer *, b_ret,
-                 buffer, b)
+                 buffer b)
 {
     *bound(b_ret) = b;
     context_schedule_return(bound(ctx));
@@ -3096,7 +3096,7 @@ closure_function(2, 1, status, nv_get_firmware_ok,
 
 closure_function(2, 1, void, nv_get_firmware_error,
                  context, ctx, buffer *, b_ret,
-                 status, s)
+                 status s)
 {
     *bound(b_ret) = 0;
     context_schedule_return(bound(ctx));

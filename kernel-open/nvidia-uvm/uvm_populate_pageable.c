@@ -146,7 +146,7 @@ out:
 
 closure_function(6, 1, boolean, uvm_populate_handler,
                  u64, start, u64, end, int, min_prot, bool, touch, uvm_populate_permissions_t, populate_permissions, NV_STATUS *, status,
-                 vmap, m)
+                 vmap m)
 {
     u64 start = bound(start);
     u64 end = bound(end);

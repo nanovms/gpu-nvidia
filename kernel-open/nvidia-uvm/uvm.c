@@ -393,8 +393,8 @@ out:
     return io_complete(completion, 0);
 }
 
-closure_function(0, 1, sysreturn, uvm_open,
-                 file, f)
+closure_func_basic(spec_file_open, sysreturn, uvm_open,
+                   file f)
 {
     uvm_fd fd = (uvm_fd)f;
     NV_STATUS status = uvm_global_get_status();
@@ -419,7 +419,7 @@ static int uvm_chardev_create(void)
 {
     spec_file_open open;
 
-    open = closure(heap_locked(get_kernel_heaps()), uvm_open);
+    open = closure_func(heap_locked(get_kernel_heaps()), spec_file_open, uvm_open);
     assert(open != INVALID_ADDRESS);
     if (create_special_file(ss("/dev/nvidia-uvm"), open, sizeof(struct uvm_fd), 0)) {
         return 0;
