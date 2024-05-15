@@ -55,7 +55,8 @@ void NV_API_CALL nv_init_msi(nv_state_t *nv)
         }
         else
         {
-            msi_format(&address, &data, nv->interrupt_line);
+            u32 target_cpu = irq_get_target_cpu(irange(0, 0));
+            msi_format(&address, &data, nv->interrupt_line, target_cpu);
             pci_cfgwrite(dev, cp + 4, 4, address);    /* address low */
             pci_cfgwrite(dev, cp + 8, 4, 0);          /* address high */
             pci_cfgwrite(dev, cp + 12, 4, data);      /* data */
