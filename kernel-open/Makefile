@@ -10,10 +10,11 @@ include $(NANOS_DIR)/vars.mk
 
 TARGET_ARCH ?= x86_64
 OUTPUTDIR ?= _out/Nanos_$(TARGET_ARCH)
+OBJDIR = $(OUTPUTDIR)
 
 include $(NANOS_DIR)/rules.mk
 
-GENHEADERS=	$(CURDIR)/closure_templates.h
+GENHEADERS += $(OUTPUTDIR)/closure_templates.h
 
 include nvidia/nvidia-sources.Kbuild
 NVIDIA_OBJS=	$(addprefix $(OUTPUTDIR)/, $(NVIDIA_SOURCES:c=o))
@@ -26,7 +27,6 @@ NVIDIA_UVM_DEPS=	$(addprefix $(OUTPUTDIR)/, $(NVIDIA_UVM_SOURCES:c=d))
 OBJS=	$(NVIDIA_OBJS) $(NVIDIA_UVM_OBJS)
 DEPS=	$(NVIDIA_DEPS) $(NVIDIA_UVM_DEPS)
 
-OBJDIR = $(OUTPUTDIR)
 CLEANFILES = $(GENHEADERS) $(OBJS) $(DEPS) \
 	$(OUTPUTDIR)/gpu_nvidia $(OUTPUTDIR)/gpu_nvidia.dbg
 CLEANDIRS = $(OBJDIR)/nvidia $(OBJDIR)/nvidia-uvm
