@@ -1,0 +1,43 @@
+version: 2.1
+jobs:
+  nightly:
+    docker:
+      - image: cimg/go:1.20.0
+    steps:
+      - checkout
+      - run: git clone --depth 1 https://github.com/nanovms/nanos.git
+      - run: make -j32 NANOS_DIR=~/project/nanos
+      - run: echo "deb https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
+      - run: curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -
+      - run: sudo apt-get update && sudo apt-get install google-cloud-sdk
+      - run: echo $GCLOUD_SERVICE_KEY | gcloud auth activate-service-account --key-file=-
+      - run: gcloud config set project ${GOOGLE_PROJECT_ID}
+      - run: gcloud --quiet config set compute/zone ${GOOGLE_COMPUTE_ZONE}
+      - run:
+          name: copy build artifacts
+          command: |
+            mkdir tmp && cd tmp
+            cp ../kernel-open/_out/Nanos_x86_64/gpu_nvidia ../kernel-open/_out/Nanos_x86_64/gpu_nvidia.dbg .
+            mkdir nvidia && gsutil cp gs://nanos/common/nvidia/LICENSE nvidia/
+            cd nvidia && gsutil cp gs://nanos/common/nvidia/535.113.01.tar.gz ../ && tar xvzf ../535.113.01.tar.gz && cd ..
+            tar cvzf gpu-nvidia-x86_64.tar.gz gpu_nvidia nvidia/
+            gsutil cp gpu-nvidia-x86_64.tar.gz gs://nanos/release/nightly
+            gsutil acl ch -u AllUsers:R gs://nanos/release/nightly/gpu-nvidia-x86_64.tar.gz
+            gzip -c gpu_nvidia.dbg > gpu-nvidia-x86_64.dbg.gz
+            gsutil cp gpu-nvidia-x86_64.dbg.gz gs://nanos/release/nightly
+            gsutil acl ch -u AllUsers:R gs://nanos/release/nightly/gpu-nvidia-x86_64.dbg.gz
+            echo $(date +"%m%d%Y") > gpu-nvidia-x86_64.timestamp
+            gsutil cp gpu-nvidia-x86_64.timestamp gs://nanos/release/nightly
+            gsutil acl ch -u AllUsers:R gs://nanos/release/nightly/gpu-nvidia-x86_64.timestamp
+
+workflows:
+  nightly:
+    triggers:
+      - schedule:
+          cron: "0 2 * * *" # 6PM PST
+          filters:
+            branches:
+              only:
+                - main
+    jobs:
+      - nightly
