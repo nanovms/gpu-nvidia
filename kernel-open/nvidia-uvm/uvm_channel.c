@@ -1936,9 +1936,9 @@ static NV_STATUS internal_channel_create(uvm_channel_t *channel)
              channel_info->hwChannelId,
              channel_info->hwRunlistId,
              channel_info->hwChannelId,
-             uvm_channel_is_sec2(channel) ? "SEC2" :
-             uvm_channel_is_wlc(channel) ? "WLC" :
-             uvm_channel_is_lcic(channel) ? "LCIC" : "CE",
+             uvm_channel_is_sec2(channel) ? ss("SEC2") :
+             uvm_channel_is_wlc(channel) ? ss("WLC") :
+             uvm_channel_is_lcic(channel) ? ss("LCIC") : ss("CE"),
              channel->pool->engine_index);
 
     return NV_OK;

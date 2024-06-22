@@ -375,8 +375,7 @@ NvU32 NV_API_CALL os_strtoul(const char *str, char **endp, NvU32 base)
 
 NvS32 NV_API_CALL os_string_compare(const char *str1, const char *str2)
 {
-    return runtime_strcmp(isstring((char *)str1, os_string_length(str1)),
-                          isstring((char *)str2, os_string_length(str2)));
+    return runtime_strcmp(sstring_from_cstr(str1), sstring_from_cstr(str2));
 }
 
 void *os_mem_copy_custom(
@@ -1533,7 +1532,7 @@ NvU32 NV_API_CALL os_get_grid_csp_support(void)
 
 void NV_API_CALL os_bug_check(NvU32 bugCode, const char *bugCodeStr)
 {
-    halt_with_code(bugCode, isstring((char *)bugCodeStr, os_string_length(bugCodeStr)));
+    halt_with_code(bugCode, sstring_from_cstr(bugCodeStr));
 }
 
 NV_STATUS NV_API_CALL os_get_euid(NvU32 *pSecToken)

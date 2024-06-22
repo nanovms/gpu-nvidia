@@ -400,15 +400,16 @@ typedef struct nvidia_event
 #define likely(x)   (x)
 #define unlikely(x) (x)
 
+#define sstring_from_cstr(s)    isstring((char *)(s), os_string_length(s))
+
 #define memcpy(d, s, n)         ({ runtime_memcpy(d, s, n); d; })
 #define memset(p, v, l)         ({ runtime_memset((void *)(p), v, l); (void *)(p); })
 #define memcmp                  runtime_memcmp
 #define strcmp                  os_string_compare
 #define strlen                  os_string_length
 #define strstr(_h, _n)          \
-    runtime_strstr(isstring((char *)(_h), os_string_length(_h)),    \
-                   isstring((char *)(_n), os_string_length(_n)))
-#define strchr(_s, _c)          runtime_strchr(isstring((char *)(_s), os_string_length(_s)), _c)
+    runtime_strstr(sstring_from_cstr(_h), sstring_from_cstr(_n))
+#define strchr(_s, _c)          runtime_strchr(sstring_from_cstr(_s), _c)
 #define strncpy(dest, src, len) ({  \
     runtime_memcpy(dest, src, MIN(os_string_length(src) + 1, len)); dest; \
 })

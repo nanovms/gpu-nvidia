@@ -3072,7 +3072,7 @@ void NV_API_CALL nv_fetch_firmware(
     pagecache_node pn;
     range r;
 
-    fsf = fsfile_open(isstring((char *)file_path, os_string_length(file_path)));
+    fsf = fsfile_open(sstring_from_cstr(file_path));
     if (!fsf)
         return;
     len = fsfile_get_length(fsf);

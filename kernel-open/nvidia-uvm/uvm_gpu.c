@@ -120,8 +120,8 @@ static void fill_gpu_info(uvm_parent_gpu_t *parent_gpu, const UvmGpuInfo *gpu_in
              sizeof(parent_gpu->name),
              "ID %u: %s: %s",
              uvm_id_value(parent_gpu->id),
-             parent_gpu->rm_info.name,
-             uuid_buffer);
+             sstring_from_cstr(parent_gpu->rm_info.name),
+             sstring_from_cstr(uuid_buffer));
 }
 
 static NV_STATUS get_gpu_caps(uvm_gpu_t *gpu)
