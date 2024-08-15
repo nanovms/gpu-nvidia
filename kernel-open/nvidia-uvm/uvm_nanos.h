@@ -3,9 +3,9 @@
 
 #ifndef _KERNEL_H_
 #define _KERNEL_H_
-#include <net_system_structs.h>
 #include <unix_internal.h>
 #include <filesystem.h>
+#include <net_system_structs.h>
 #endif
 
 #include "nvtypes.h"
