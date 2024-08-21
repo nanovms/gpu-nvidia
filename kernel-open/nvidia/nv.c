@@ -3079,7 +3079,7 @@ void NV_API_CALL nv_fetch_firmware(
     pn = fsfile_get_cachenode(fsf);
     r = irange(0, PAGECACHE_MAX_SG_ENTRIES * PAGESIZE);
     do {
-        pagecache_node_fetch_pages(pn, r);
+        pagecache_node_fetch_pages(pn, r, 0, 0);
         r = range_add(r, PAGECACHE_MAX_SG_ENTRIES * PAGESIZE);
     } while (r.start < len);
     fsfile_release(fsf);
