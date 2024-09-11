@@ -173,6 +173,36 @@ err:
     return status;
 }
 
+static status uvm_vm_fault_sigbus(process p, context ctx, u64 vaddr, vmap vma, pending_fault *pf)
+{
+    return timm("result", "sigbus");
+}
+
+closure_func_basic(thunk, void, uvm_vm_fault_async)
+{
+    pending_fault pf = struct_from_closure(pending_fault, async_handler);
+    uvm_va_space_t *va_space = pf->custom;
+
+    pf->custom = uvm_va_space_cpu_fault_managed(va_space, pf->ctx, pf->addr);
+    thunk complete = (thunk)&pf->complete;
+    apply(complete);
+}
+
+static status uvm_vm_fault(process p, context ctx, u64 vaddr, vmap vm, pending_fault *pf)
+{
+    if (!*pf) {
+        pending_fault new_pf = new_pending_fault_locked(p, ctx, vaddr);
+        if (new_pf != INVALID_ADDRESS) {
+            new_pf->type = PENDING_FAULT_CUSTOM;
+            new_pf->custom = uvm_va_space_get(vm->fd);
+            init_closure_func(&new_pf->async_handler, thunk, uvm_vm_fault_async);
+        }
+        *pf = new_pf;
+        return STATUS_OK;
+    }
+    return (*pf)->custom;
+}
+
 closure_func_basic(fdesc_mmap, sysreturn, uvm_mmap,
                    vmap vma, u64 offset)
 {
@@ -207,6 +237,8 @@ closure_func_basic(fdesc_mmap, sysreturn, uvm_mmap,
         return -EINVAL;
     }
 
+    vma->fault = uvm_vm_fault;
+
     // This identity assignment is needed so uvm_vm_open can find its parent vma
     uvm_vma_wrapper_t *vma_wrapper = uvm_vma_wrapper_alloc(vma);
     if (!vma_wrapper) {
@@ -238,6 +270,7 @@ closure_func_basic(fdesc_mmap, sysreturn, uvm_mmap,
                 va_range->type == UVM_VA_RANGE_TYPE_SEMAPHORE_POOL) {
             uvm_vma_wrapper_destroy(vma_wrapper);
             vma_wrapper_allocated = false;
+            vma->fault = uvm_vm_fault_sigbus;
             status = uvm_mem_map_cpu_user(va_range->semaphore_pool.mem, va_range->va_space, vma);
         }
     }

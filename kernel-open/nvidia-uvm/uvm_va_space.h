@@ -847,9 +847,7 @@ NV_STATUS uvm_test_destroy_gpu_va_space_delay(UVM_TEST_DESTROY_GPU_VA_SPACE_DELA
 // VM_FAULT_OOM: if system memory wasn't available.
 // VM_FAULT_SIGBUS: if a CPU mapping to fault_addr cannot be accessed,
 //     for example because it's within a range group which is non-migratable.
-vm_fault_t uvm_va_space_cpu_fault_managed(uvm_va_space_t *va_space,
-                                          struct vm_area_struct *vma,
-                                          struct vm_fault *vmf);
+status uvm_va_space_cpu_fault_managed(uvm_va_space_t *va_space, context ctx, u64 vaddr);
 
 // Handle a CPU fault in the given VA space for a HMM allocation,
 // performing any operations necessary to establish a coherent CPU mapping
@@ -863,8 +861,6 @@ vm_fault_t uvm_va_space_cpu_fault_managed(uvm_va_space_t *va_space,
 //     (possibly or'ed with VM_FAULT_MAJOR if a migration was needed).
 // VM_FAULT_OOM: if system memory wasn't available.
 // VM_FAULT_SIGBUS: if a CPU mapping to fault_addr cannot be accessed.
-vm_fault_t uvm_va_space_cpu_fault_hmm(uvm_va_space_t *va_space,
-                                      struct vm_area_struct *vma,
-                                      struct vm_fault *vmf);
+status uvm_va_space_cpu_fault_hmm(uvm_va_space_t *va_space, context ctx, u64 vaddr);
 
 #endif // __UVM_VA_SPACE_H__

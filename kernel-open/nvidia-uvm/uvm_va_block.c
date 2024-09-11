@@ -6715,10 +6715,36 @@ NV_STATUS uvm_va_block_unmap(uvm_va_block_t *va_block,
 // each call to vm_insert_page. Multiple faults under one VMA in separate
 // blocks can be serviced concurrently, so the VMA wrapper lock is used
 // to protect access to vma->vm_page_prot.
-static NV_STATUS uvm_cpu_insert_page(NvU64 addr,
+static NV_STATUS uvm_cpu_insert_page(uvm_vma_wrapper_t *vma_wrapper, NvU64 addr,
                                      u64 page,
                                      uvm_prot_t new_prot)
 {
+    vmap vma = &vma_wrapper->vma;
+    unsigned long target_flags;
+
+    UVM_ASSERT(vma);
+
+    target_flags = vma->flags;
+
+    if (new_prot == UVM_PROT_READ_ONLY)
+        target_flags &= ~VMAP_FLAG_WRITABLE;
+
+    // Take VMA wrapper lock to check vma->vm_page_prot
+    uvm_down_read(&vma_wrapper->lock);
+
+    // Take a write lock if we need to modify the VMA vm_page_prot
+    // - vma->vm_page_prot creates writable PTEs but new prot is RO
+    // - vma->vm_page_prot creates read-only PTEs but new_prot is RW
+    if (vma->flags != target_flags) {
+        uvm_up_read(&vma_wrapper->lock);
+        uvm_down_write(&vma_wrapper->lock);
+
+        vma->flags = target_flags;
+
+        uvm_downgrade_write(&vma_wrapper->lock);
+    }
+    map(addr, page, PAGE_SIZE, pageflags_from_vmflags(target_flags));
+    uvm_up_read(&vma_wrapper->lock);
     return NV_OK;
 }
 
@@ -6810,6 +6836,7 @@ static NV_STATUS block_map_cpu_page_to(uvm_va_block_t *block,
     uvm_prot_t curr_prot = block_page_prot_cpu(block, page_index);
     uvm_va_range_t *va_range = block->va_range;
     uvm_va_space_t *va_space = uvm_va_block_get_va_space(block);
+    uvm_vma_wrapper_t *vma_wrapper;
     NV_STATUS status;
     NvU64 addr;
     NvU64 page;
@@ -6856,6 +6883,7 @@ static NV_STATUS block_map_cpu_page_to(uvm_va_block_t *block,
             uvm_spin_unlock(&rgr->range_group->migrated_ranges_lock);
         }
     }
+    vma_wrapper = va_range->managed.vma_wrapper;
 
     // Add the mapping
     addr = uvm_va_block_cpu_page_address(block, page_index);
@@ -6873,7 +6901,7 @@ static NV_STATUS block_map_cpu_page_to(uvm_va_block_t *block,
         return status;
 
     page = block_page_get(block, block_phys_page(resident_id, page_index));
-    return uvm_cpu_insert_page(addr, page, new_prot);
+    return uvm_cpu_insert_page(vma_wrapper, addr, page, new_prot);
 }
 
 // Maps the CPU to the given pages which are resident on resident_id.
@@ -10710,7 +10738,7 @@ NV_STATUS uvm_va_block_check_logical_permissions(uvm_va_block_t *va_block,
 // Check if we are faulting on a page with valid permissions to check if we can
 // skip fault handling. See uvm_va_block_t::cpu::fault_authorized for more
 // details
-static bool skip_cpu_fault_with_valid_permissions(uvm_va_block_t *va_block,
+static bool skip_cpu_fault_with_valid_permissions(context ctx, uvm_va_block_t *va_block,
                                                   uvm_page_index_t page_index,
                                                   uvm_fault_access_type_t fault_access_type)
 {
@@ -10724,7 +10752,8 @@ static bool skip_cpu_fault_with_valid_permissions(uvm_va_block_t *va_block,
                                            UVM_ID_CPU,
                                            uvm_fault_access_type_to_prot(fault_access_type))) {
         NvU64 now = NV_GETTIME();
-        int pid = current->p->pid;
+        thread t = (ctx->type == CONTEXT_TYPE_SYSCALL) ? ((syscall_context)ctx)->t : (thread)ctx;
+        int pid = t->p->pid;
 
         // Latch the pid/timestamp/page_index values for the first time
         if (!va_block->cpu.fault_authorized.first_fault_stamp) {
@@ -10800,7 +10829,8 @@ static NV_STATUS block_cpu_fault_locked(uvm_va_block_t *va_block,
 
     uvm_processor_mask_zero(&service_context->cpu_fault.gpus_to_check_for_ecc);
 
-    if (skip_cpu_fault_with_valid_permissions(va_block, page_index, fault_access_type))
+    if (skip_cpu_fault_with_valid_permissions(service_context->cpu_fault.ctx, va_block, page_index,
+                                              fault_access_type))
         return NV_OK;
 
     thrashing_hint = uvm_perf_thrashing_get_hint(va_block, fault_addr, UVM_ID_CPU);

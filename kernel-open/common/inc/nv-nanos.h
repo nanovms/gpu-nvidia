@@ -677,6 +677,12 @@ static inline sysreturn nv_io_remap_page_range(vmap vm, NvU64 phys_addr, NvU64 s
     return virt;
 }
 
+static inline status nv_insert_pfn(vmap vma, NvU64 virt_addr, NvU64 pfn, NvU32 extra_prot)
+{
+    map(virt_addr, pfn, PAGESIZE, pageflags_from_vmflags(vma->flags));
+    return STATUS_OK;
+}
+
 #define NV_GET_CURRENT_PROCESS()        ({ thread t = current; int pid = t ? t->p->pid : 0; pid; })
 #define NV_COPY_TO_USER(to, from, n)    (copy_to_user(to, from, n) == false)
 #define NV_COPY_FROM_USER(to, from, n)  (copy_from_user(from, to, n) == false)

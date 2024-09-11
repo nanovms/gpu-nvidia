@@ -118,7 +118,7 @@ typedef struct
 {
     // Needed for creating CPU mappings on the va_range. Do not access this
     // directly, instead use uvm_va_range_vma and friends.
-    vmap vma;
+    struct vmap vma;
 
     uvm_rw_semaphore_t lock;
 } uvm_vma_wrapper_t;
@@ -651,7 +651,7 @@ static vmap uvm_va_range_vma(uvm_va_range_t *va_range)
     // vm_file, vm_private_data, vm_start, and vm_end are all safe to access
     // here because they can't change without the kernel calling vm_ops->open
     // or vm_ops->close, which both take va_space->lock.
-    vma = va_range->managed.vma_wrapper->vma;
+    vma = &va_range->managed.vma_wrapper->vma;
     UVM_ASSERT(vma);
     UVM_ASSERT_MSG(va_range->node.start >= vma->node.r.start,
                    "Range mismatch: va_range: [0x%lx, 0x%lx] vma: [0x%lx, 0x%lx]\n",

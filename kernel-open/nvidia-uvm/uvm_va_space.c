@@ -1818,3 +1818,172 @@ void uvm_service_block_context_exit(void)
     }
     INIT_LIST_HEAD(&g_cpu_service_block_context_list);
 }
+
+// Get a fault service context from the global list or allocate a new one if
+// there are no available entries.
+static uvm_service_block_context_t *service_block_context_cpu_alloc(void)
+{
+    uvm_service_block_context_t *service_context;
+
+    uvm_spin_lock(&g_cpu_service_block_context_list_lock);
+
+    service_context = list_first_entry_or_null(&g_cpu_service_block_context_list, uvm_service_block_context_t,
+                                               cpu_fault.service_context_list);
+
+    if (service_context)
+        list_del(&service_context->cpu_fault.service_context_list);
+
+    uvm_spin_unlock(&g_cpu_service_block_context_list_lock);
+
+    if (!service_context)
+        service_context = uvm_kvmalloc(sizeof(*service_context));
+
+    return service_context;
+}
+
+// Put a fault service context in the global list.
+static void service_block_context_cpu_free(uvm_service_block_context_t *service_context)
+{
+    uvm_spin_lock(&g_cpu_service_block_context_list_lock);
+
+    list_add(&service_context->cpu_fault.service_context_list, &g_cpu_service_block_context_list);
+
+    uvm_spin_unlock(&g_cpu_service_block_context_list_lock);
+}
+
+static status uvm_va_space_cpu_fault(uvm_va_space_t *va_space, context ctx, u64 fault_addr,
+                                     bool is_hmm)
+{
+    uvm_va_block_t *va_block;
+    bool is_write = is_write_fault(ctx->frame);
+    NV_STATUS status = uvm_global_get_status();
+    bool tools_enabled;
+    uvm_service_block_context_t *service_context;
+    uvm_global_processor_mask_t gpus_to_check_for_ecc;
+
+    if (status != NV_OK)
+        goto convert_error;
+
+    service_context = service_block_context_cpu_alloc();
+    if (!service_context) {
+        status = NV_ERR_NO_MEMORY;
+        goto convert_error;
+    }
+
+    service_context->cpu_fault.wakeup_time_stamp = 0;
+    service_context->cpu_fault.ctx = ctx;
+
+    do {
+        bool do_sleep = false;
+
+        if (status == NV_WARN_MORE_PROCESSING_REQUIRED) {
+            NvU64 now = NV_GETTIME();
+            if (now < service_context->cpu_fault.wakeup_time_stamp)
+                do_sleep = true;
+
+            if (do_sleep)
+                uvm_tools_record_throttling_start(va_space, fault_addr, UVM_ID_CPU);
+
+            // Drop the VA space lock while we sleep
+            uvm_va_space_up_read(va_space);
+
+            // usleep_range is preferred because msleep has a 20ms granularity
+            // and udelay uses a busy-wait loop. usleep_range uses
+            // high-resolution timers and, by adding a range, the Linux
+            // scheduler may coalesce our wakeup with others, thus saving some
+            // interrupts.
+            if (do_sleep) {
+                unsigned long nap_us = (service_context->cpu_fault.wakeup_time_stamp - now) / 1000;
+
+                kernel_delay(microseconds(nap_us));
+            }
+        }
+
+        uvm_va_space_down_read(va_space);
+
+        if (do_sleep)
+            uvm_tools_record_throttling_end(va_space, fault_addr, UVM_ID_CPU);
+
+        if (is_hmm) {
+            // Note that normally we should find a va_block for the faulting
+            // address because the block had to be created when migrating a
+            // page to the GPU and a device private PTE inserted into the CPU
+            // page tables in order for migrate_to_ram() to be called. Not
+            // finding it means the PTE was remapped to a different virtual
+            // address with mremap() so create a new va_block if needed.
+            status = uvm_hmm_va_block_find_create(va_space,
+                                                  fault_addr,
+                                                  &service_context->block_context.hmm.vma,
+                                                  &va_block);
+            if (status != NV_OK)
+                break;
+
+            status = uvm_hmm_migrate_begin(va_block);
+            if (status != NV_OK)
+                break;
+        }
+        else {
+            status = uvm_va_block_find_create_managed(va_space, fault_addr, &va_block);
+            if (status != NV_OK) {
+                UVM_ASSERT_MSG(status == NV_ERR_NO_MEMORY, "status: %s\n", nvstatusToString(status));
+                break;
+            }
+        }
+
+        // Loop until thrashing goes away.
+        status = uvm_va_block_cpu_fault(va_block, fault_addr, is_write, service_context);
+
+        if (is_hmm)
+            uvm_hmm_migrate_finish(va_block);
+    } while (status == NV_WARN_MORE_PROCESSING_REQUIRED);
+
+    if (status != NV_OK && !(is_hmm && status == NV_ERR_BUSY_RETRY)) {
+        UvmEventFatalReason reason;
+
+        reason = uvm_tools_status_to_fatal_fault_reason(status);
+        UVM_ASSERT(reason != UvmEventFatalReasonInvalid);
+
+        uvm_tools_record_cpu_fatal_fault(va_space, fault_addr, is_write, reason);
+    }
+
+    tools_enabled = va_space->tools.enabled;
+
+    if (status == NV_OK) {
+        uvm_va_space_global_gpus_in_mask(va_space,
+                                         &gpus_to_check_for_ecc,
+                                         &service_context->cpu_fault.gpus_to_check_for_ecc);
+        uvm_global_mask_retain(&gpus_to_check_for_ecc);
+    }
+
+    uvm_va_space_up_read(va_space);
+
+    if (status == NV_OK) {
+        status = uvm_global_mask_check_ecc_error(&gpus_to_check_for_ecc);
+        uvm_global_mask_release(&gpus_to_check_for_ecc);
+    }
+
+    if (tools_enabled)
+        uvm_tools_flush_events();
+
+    // Major faults involve I/O in order to resolve the fault.
+    // If any pages were DMA'ed between the GPU and host memory, that makes it
+    // a major fault. A process can also get statistics for major and minor
+    // faults by calling readproc().
+    service_block_context_cpu_free(service_context);
+
+convert_error:
+    switch (status) {
+        case NV_OK:
+        case NV_ERR_BUSY_RETRY:
+            return STATUS_OK;
+        case NV_ERR_NO_MEMORY:
+            return timm_oom;
+        default:
+            return timm("result", "sigbus");
+    }
+}
+
+status uvm_va_space_cpu_fault_managed(uvm_va_space_t *va_space, context ctx, u64 vaddr)
+{
+    return uvm_va_space_cpu_fault(va_space, ctx, vaddr, false);
+}

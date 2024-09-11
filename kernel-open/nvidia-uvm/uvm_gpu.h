@@ -139,7 +139,7 @@ struct uvm_service_block_context_struct
         // section.
         unsigned long notifier_seq;
 
-        struct vm_fault *vmf;
+        context ctx;
     } cpu_fault;
 
     //

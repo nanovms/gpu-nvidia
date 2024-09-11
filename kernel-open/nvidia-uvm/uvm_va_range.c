@@ -185,7 +185,7 @@ NV_STATUS uvm_va_range_create_mmap(uvm_va_space_t *va_space,
                                    uvm_va_range_t **out_va_range)
 {
     NV_STATUS status;
-    vmap vma = vma_wrapper->vma;
+    vmap vma = &vma_wrapper->vma;
     uvm_va_range_t *va_range = NULL;
 
     // Check for no overlap with HMM blocks.
@@ -1688,7 +1688,7 @@ uvm_vma_wrapper_t *uvm_vma_wrapper_alloc(vmap vma)
     if (!vma_wrapper)
         return NULL;
 
-    vma_wrapper->vma = vma;
+    runtime_memcpy(&vma_wrapper->vma, vma, sizeof(*vma));
     uvm_init_rwsem(&vma_wrapper->lock, UVM_LOCK_ORDER_LEAF);
 
     return vma_wrapper;

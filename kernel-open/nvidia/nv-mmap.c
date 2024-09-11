@@ -27,6 +27,83 @@
 #include "nv-nanos.h"
 #include "nv_speculation_barrier.h"
 
+static status nvidia_fault(process p, context ctx, u64 vaddr, vmap vma, pending_fault *pf)
+{
+    nvfd nvlfp = struct_from_field(vma->fd, nvfd, f);
+    nv_nanos_state_t *nvl = nvlfp->nvptr;
+    nv_state_t *nv = NV_STATE_PTR(nvl);
+    status ret = STATUS_OK;
+
+    NvU64 page;
+    NvU64 num_pages = NV_VMA_SIZE(vma) >> PAGE_SHIFT;
+    NvU64 pfn_start = (nvlfp->mmap_context.mmap_start >> PAGE_SHIFT);
+
+    if (vma->node_offset != 0)
+    {
+        return timm("result", "node_offset 0x%lx", vma->node_offset);
+    }
+
+    // Mapping revocation is only supported for GPU mappings.
+    if (NV_IS_CTL_DEVICE(nv))
+    {
+        return timm("result", "ctl device");
+    }
+
+    down(&nvl->mmap_lock);
+
+    // Wake up the GPU if it is not currently safe to mmap.
+    if (!nvl->safe_to_mmap)
+    {
+        NV_STATUS status;
+
+        if (!nvl->gpu_wakeup_callback_needed)
+        {
+            // GPU wakeup callback already scheduled.
+            up(&nvl->mmap_lock);
+            return STATUS_OK;
+        }
+
+        /*
+         * GPU wakeup cannot be completed directly in the fault handler due to the
+         * inability to take the GPU lock while mmap_lock is held.
+         */
+        status = rm_schedule_gpu_wakeup(nvl->sp[NV_DEV_STACK_GPU_WAKEUP], nv);
+        if (status != NV_OK)
+        {
+            nv_printf(NV_DBG_ERRORS,
+                      "NVRM: VM: rm_schedule_gpu_wakeup failed: %x\n", status);
+            up(&nvl->mmap_lock);
+            return timm("result", "rm_schedule_gpu_wakeup failed: %x", status);
+        }
+        // Ensure that we do not schedule duplicate GPU wakeup callbacks.
+        nvl->gpu_wakeup_callback_needed = NV_FALSE;
+
+        up(&nvl->mmap_lock);
+        return STATUS_OK;
+    }
+
+    // Safe to mmap, map all pages in this VMA.
+    for (page = 0; page < num_pages; page++)
+    {
+        NvU64 virt_addr = vma->node.r.start + (page << PAGE_SHIFT);
+        NvU64 pfn = pfn_start + page;
+
+        ret = nv_insert_pfn(vma, virt_addr, pfn,
+                            nvlfp->mmap_context.remap_prot_extra);
+        if (ret != STATUS_OK)
+        {
+            nv_printf(NV_DBG_ERRORS,
+                      "NVRM: VM: nv_insert_pfn failed: %x\n", ret);
+            break;
+        }
+
+        nvl->all_mappings_revoked = NV_FALSE;
+    }
+    up(&nvl->mmap_lock);
+
+    return ret;
+}
+
 int nv_encode_caching(
     pgprot_t *prot,
     NvU32     cache_type,
@@ -310,6 +387,7 @@ sysreturn nvidia_mmap_helper(nv_state_t *nv, nvfd nvlfp, nvidia_stack_t *sp, vma
         NV_PRINT_AT(NV_DBG_MEMINFO, at);
     }
 
+    vma->fault = nvidia_fault;
     return ret;
 }
 
