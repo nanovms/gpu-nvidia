@@ -291,7 +291,7 @@ static inline boolean bitmap_full(const unsigned long *map, unsigned int nbits)
 
 static inline void bitmap_cpy(unsigned long *dst, const unsigned long *src, unsigned int nbits)
 {
-    runtime_memcpy(dst, src, (nbits + 63) / 64);
+    runtime_memcpy(dst, src, sizeof(*src) * ((nbits + 63) / 64));
 }
 #define bitmap_copy  bitmap_cpy
 
