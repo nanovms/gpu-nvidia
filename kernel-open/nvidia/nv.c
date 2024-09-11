@@ -3085,22 +3085,12 @@ void NV_API_CALL nv_fetch_firmware(
     fsfile_release(fsf);
 }
 
-closure_function(2, 1, status, nv_get_firmware_ok,
-                 context, ctx, buffer *, b_ret,
-                 buffer b)
-{
-    *bound(b_ret) = b;
-    context_schedule_return(bound(ctx));
-    return STATUS_OK;
-}
-
-closure_function(2, 1, void, nv_get_firmware_error,
-                 context, ctx, buffer *, b_ret,
+closure_function(2, 1, void, nv_get_firmware_complete,
+                 context, ctx, status *, s_ret,
                  status s)
 {
-    *bound(b_ret) = 0;
+    *bound(s_ret) = s;
     context_schedule_return(bound(ctx));
-    timm_dealloc(s);
 }
 
 const void* NV_API_CALL nv_get_firmware(
@@ -3117,9 +3107,13 @@ const void* NV_API_CALL nv_get_firmware(
     context ctx = get_current_context(current_cpu());
     vector fwfile_v;
     tuple fwfile_t;
-    buffer b;
-    buffer_handler bh;
+    fsfile fsf;
+    pagecache_node pn;
+    u64 len;
+    sg_list sg;
+    void *buf;
     status_handler sh;
+    status s;
 
     fwfile_v = split(h, alloca_wrap_buffer(file_path, os_string_length(file_path)), '/');
     fwfile_t = resolve_path(filesystem_getroot(fs), fwfile_v);
@@ -3128,28 +3122,41 @@ const void* NV_API_CALL nv_get_firmware(
     {
         return NULL;
     }
-    bh = closure(h, nv_get_firmware_ok, get_current_context(current_cpu()), &b);
-    if (bh == INVALID_ADDRESS)
-    {
+    if ((fs->get_fsfile(fs, fwfile_t, &fsf) != 0) || !fsf)
         return NULL;
-    }
-    sh = closure(h, nv_get_firmware_error, ctx, &b);
+    len = fsfile_get_length(fsf);
+    pn = fsfile_get_cachenode(fsf);
+    sg = sg_new(1);
+    if (sg == INVALID_ADDRESS)
+        return NULL;
+    buf = allocate(h, len);
+    if (buf == INVALID_ADDRESS)
+        return NULL;
+    sg_buf sgb = sg_list_tail_add(sg, len);
+    sgb->buf = buf;
+    sgb->size = len;
+    sgb->offset = 0;
+    sgb->refcount = 0;
+    sh = closure(h, nv_get_firmware_complete, ctx, &s);
     if (sh == INVALID_ADDRESS)
     {
-        deallocate_closure(bh);
         return NULL;
     }
     context_pre_suspend(ctx);
-    filesystem_read_entire(fs, fwfile_t, h, bh, sh);
+    apply(pagecache_node_get_reader(pn), sg, irangel(0, len), sh);
     context_suspend();
-    deallocate_closure(bh);
+    fsfile_release(fsf);
     deallocate_closure(sh);
-    if (b)
+    if (sg_total_len(sg) != 0)
+        return NULL;
+    deallocate_sg_list(sg);
+    if (is_ok(s))
     {
-        *fw_buf = buffer_ref(b, 0);
-        *fw_size = buffer_length(b);
+        *fw_buf = buf;
+        *fw_size = len;
         return INVALID_ADDRESS; /* any non-NULL value is OK */
     }
+    timm_dealloc(s);
     return NULL;
 }
 
