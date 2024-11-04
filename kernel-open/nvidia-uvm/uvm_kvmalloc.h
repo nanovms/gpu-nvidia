@@ -41,7 +41,9 @@
 //
 // This is in the header so callers can use it to inform their allocation sizes
 // if they wish.
-#define UVM_KMALLOC_THRESHOLD infinity
+//
+// Default value is 16. See: https://github.com/nanovms/nanos/blob/103518003874e7c8c3cb6e5a93d81fd0f197fde6/src/config.h#L84-L85
+#define UVM_KMALLOC_THRESHOLD 16
 
 NV_STATUS uvm_kvmalloc_init(void);
 void uvm_kvmalloc_exit(void);

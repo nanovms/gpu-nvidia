@@ -507,8 +507,8 @@ typedef struct nvidia_event
 #define vmalloc(size)       kmalloc(size, 0)
 #define vzalloc(size)       kzalloc(size, 0)
 #define ksize(p)            objcache_from_object(u64_from_pointer(p), PAGESIZE_2M)->pagesize
-#define is_vmalloc_addr(p)  false
-#define vfree               kfree
+#define is_vmalloc_addr(p)  (objcache_from_object(u64_from_pointer(p), PAGESIZE_2M) == INVALID_ADDRESS)
+#define vfree               NV_KFREE
 
 static inline void *kmalloc(unsigned long size, int flags)
 {
