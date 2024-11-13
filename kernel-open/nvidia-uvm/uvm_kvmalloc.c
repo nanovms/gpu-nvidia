@@ -257,7 +257,6 @@ static void *alloc_internal(size_t size, bool zero_memory)
     // Make sure that (sizeof(hdr) + size) is what it should be
     BUILD_BUG_ON(sizeof(uvm_vmalloc_hdr_t) != offsetof(uvm_vmalloc_hdr_t *, ptr));
 
-    assert(size <= (1 << 32));
     if (size <= UVM_KMALLOC_THRESHOLD) {
         if (zero_memory)
             return kzalloc(size, NV_UVM_GFP_FLAGS);
