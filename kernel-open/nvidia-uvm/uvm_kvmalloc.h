@@ -27,6 +27,11 @@
 #include "uvm_nanos.h"
 #include "uvm_test_ioctl.h"
 
+#ifndef _CONFIG_H_
+#include <config.h>
+#define _CONFIG_H_
+#endif
+
 // kmalloc is faster than vmalloc because it doesn't have to remap kernel
 // virtual memory, but for that same reason it requires physically-contiguous
 // memory. It also supports a native krealloc function which is missing in
@@ -41,7 +46,7 @@
 //
 // This is in the header so callers can use it to inform their allocation sizes
 // if they wish.
-#define UVM_KMALLOC_THRESHOLD infinity
+#define UVM_KMALLOC_THRESHOLD (1 << MAX_MCACHE_ORDER)
 
 NV_STATUS uvm_kvmalloc_init(void);
 void uvm_kvmalloc_exit(void);

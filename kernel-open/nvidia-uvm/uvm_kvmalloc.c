@@ -27,18 +27,6 @@
 #include "uvm_kvmalloc.h"
 #include "uvm_rb_tree.h"
 
-// To implement realloc for vmalloc-based allocations we need to track the size
-// of the original allocation. We can do that by allocating a header along with
-// the allocation itself. Since vmalloc is only used for relatively large
-// allocations, this overhead is very small.
-//
-// We don't need this for kmalloc since we can use ksize().
-typedef struct
-{
-    size_t alloc_size;
-    uint8_t ptr[0];
-} uvm_vmalloc_hdr_t;
-
 typedef struct
 {
     const char *file;
@@ -257,7 +245,6 @@ static void *alloc_internal(size_t size, bool zero_memory)
     // Make sure that (sizeof(hdr) + size) is what it should be
     BUILD_BUG_ON(sizeof(uvm_vmalloc_hdr_t) != offsetof(uvm_vmalloc_hdr_t *, ptr));
 
-    assert(size <= (1 << 16));
     if (size <= UVM_KMALLOC_THRESHOLD) {
         if (zero_memory)
             return kzalloc(size, NV_UVM_GFP_FLAGS);
