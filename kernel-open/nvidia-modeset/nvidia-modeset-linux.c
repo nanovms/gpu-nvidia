@@ -260,7 +260,7 @@ void nvkms_free(void *ptr, size_t size)
     if (size <= KMALLOC_LIMIT) {
         kfree(ptr);
     } else {
-        vfree(ptr, size);
+        vfree(ptr);
     }
 }
 

@@ -481,6 +481,18 @@ typedef struct nvidia_event
 #define BUILD_BUG_ON(expr)                  build_assert(!(expr))
 #define BUILD_BUG_ON_NOT_POWER_OF_2(expr)   build_assert(((expr) & ((expr) - 1)) == 0)
 
+// To implement realloc for vmalloc-based allocations we need to track the size
+// of the original allocation. We can do that by allocating a header along with
+// the allocation itself. Since vmalloc is only used for relatively large
+// allocations, this overhead is very small.
+//
+// We don't need this for kmalloc since we can use ksize().
+typedef struct
+{
+    size_t alloc_size;
+    uint8_t ptr[0];
+} uvm_vmalloc_hdr_t;
+
 #define ZERO_SIZE_PTR       pointer_from_u64(16)
 #define ZERO_OR_NULL_PTR(p) (u64_from_pointer(p) <= u64_from_pointer(ZERO_SIZE_PTR))
 
@@ -508,7 +520,12 @@ typedef struct nvidia_event
 #define vzalloc(size)       kzalloc(size, 0)
 #define ksize(p)            objcache_from_object(u64_from_pointer(p), PAGESIZE_2M)->pagesize
 #define is_vmalloc_addr(p)  (objcache_from_object(u64_from_pointer(p), PAGESIZE_2M) == INVALID_ADDRESS)
-#define vfree               NV_KFREE
+#define vfree(p) do {                               \
+    uvm_vmalloc_hdr_t *hdr;                         \
+    hdr = container_of(p, uvm_vmalloc_hdr_t, ptr);  \
+    NV_KFREE(p, hdr->alloc_size);                   \
+} while (0)
+
 
 static inline void *kmalloc(unsigned long size, int flags)
 {

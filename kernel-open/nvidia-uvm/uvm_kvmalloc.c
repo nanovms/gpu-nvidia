@@ -27,18 +27,6 @@
 #include "uvm_kvmalloc.h"
 #include "uvm_rb_tree.h"
 
-// To implement realloc for vmalloc-based allocations we need to track the size
-// of the original allocation. We can do that by allocating a header along with
-// the allocation itself. Since vmalloc is only used for relatively large
-// allocations, this overhead is very small.
-//
-// We don't need this for kmalloc since we can use ksize().
-typedef struct
-{
-    size_t alloc_size;
-    uint8_t ptr[0];
-} uvm_vmalloc_hdr_t;
-
 typedef struct
 {
     const char *file;
@@ -297,20 +285,16 @@ void *__uvm_kvmalloc_zero(size_t size, const char *file, int line, const char *f
 
 void uvm_kvfree(void *p)
 {
-    uvm_vmalloc_hdr_t *hdr = NULL;
-
     if (!p)
         return;
 
     if (uvm_leak_checker)
         alloc_tracking_remove(p);
 
-    if (is_vmalloc_addr(p)){
-        hdr = get_hdr(p);
-        vfree(hdr, hdr->alloc_size);
-    } else {
+    if (is_vmalloc_addr(p))
+        vfree(get_hdr(p));
+    else
         kfree(p);
-    }
 }
 
 // Handle reallocs of kmalloc-based allocations
@@ -338,7 +322,7 @@ static void *realloc_from_vmalloc(void *p, size_t new_size)
     void *new_p;
 
     if (new_size == 0) {
-        vfree(old_hdr, old_hdr->alloc_size);
+        vfree(old_hdr);
         return ZERO_SIZE_PTR; // What krealloc returns for this case
     }
 
@@ -352,7 +336,7 @@ static void *realloc_from_vmalloc(void *p, size_t new_size)
         return NULL;
 
     memcpy(new_p, p, min(new_size, old_hdr->alloc_size));
-    vfree(old_hdr, old_hdr->alloc_size);
+    vfree(old_hdr);
     return new_p;
 }
 

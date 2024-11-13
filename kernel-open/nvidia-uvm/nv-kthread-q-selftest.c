@@ -241,7 +241,7 @@ static int _multithreaded_q_kthread_function(void *args)
 
 done:
     if (q_items)
-        vfree(q_items, alloc_size);
+        vfree(q_items);
 
     while (!kthread_should_stop())
         schedule();
