@@ -506,7 +506,7 @@ static inline void *nv_vmalloc(unsigned long size)
 static inline void nv_vfree(void *ptr, NvU64 size)
 {
     NV_MEMDBG_REMOVE(ptr, size);
-    vfree(ptr);
+    vfree(ptr, size);
 }
 
 static inline void *nv_ioremap(NvU64 phys, NvU64 size)

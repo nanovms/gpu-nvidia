@@ -711,7 +711,7 @@ _nvswitch_os_free
 
     if (is_vmalloc_addr(ptr))
     {
-        vfree(ptr);
+        vfree(ptr, -1ull);
     }
     else
     {
