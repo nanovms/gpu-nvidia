@@ -14,7 +14,17 @@ OBJDIR = $(OUTPUTDIR)
 
 include $(NANOS_DIR)/rules.mk
 
-GENHEADERS += $(OUTPUTDIR)/closure_templates.h
+KCONFIG = $(PLATFORMOBJDIR)/kconfig.h
+
+.PHONY: $(OUTPUTDIR)/kconfig.h.tmp
+$(OUTPUTDIR)/kconfig.h.tmp:
+	@$(MKDIR) $(dir $@)
+	@if [ -f $(KCONFIG) ]; then $(CP) $(KCONFIG) $@; else $(CAT) /dev/null > $@; fi
+
+$(OUTPUTDIR)/kconfig.h: $(OUTPUTDIR)/kconfig.h.tmp
+	@if ! (cmp -s $< $@); then $(ECHO) KCONFIG $@; $(CP) $< $@; fi
+
+GENHEADERS += $(OUTPUTDIR)/closure_templates.h $(OUTPUTDIR)/kconfig.h
 
 include nvidia/nvidia-sources.Kbuild
 NVIDIA_OBJS=	$(addprefix $(OUTPUTDIR)/, $(NVIDIA_SOURCES:c=o))
