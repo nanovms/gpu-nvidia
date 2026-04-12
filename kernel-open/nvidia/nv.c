@@ -1495,7 +1495,7 @@ closure_func_basic(fdesc_ioctl, sysreturn, nvfd_ioctl,
         return ioctl_generic(&nvlfp->f->f, request, ap);
     void *arg_ptr = varg(ap, void *);
     int arg_size = IOC_SIZE(request);
-    if (!validate_user_memory(arg_ptr, arg_size, !!(request & IOC_WRITE)))
+    if (!memory_is_user(arg_ptr, arg_size))
         return -EFAULT;
     NV_STATUS rmStatus;
     sysreturn status = 0;

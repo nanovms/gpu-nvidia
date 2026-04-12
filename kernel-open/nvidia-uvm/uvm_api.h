@@ -45,7 +45,7 @@
     case cmd:                                                                       \
     {                                                                               \
         params_type *params = varg(ap, params_type *);                              \
-        if (!validate_user_memory(params, sizeof(*params), true))                   \
+        if (!memory_is_user(params, sizeof(*params)))                               \
             return -EFAULT;                                                         \
                                                                                     \
         params->rmStatus = uvm_global_get_status();                                 \
